@@ -8,13 +8,13 @@ import pyloudnorm as pyln
 # from modelscope.utils.constant import Tasks
 from funasr import AutoModel
 
-_model = AutoModel(model="paraformer-zh")
+_model = AutoModel(model="paraformer-zh", ncpu=64)
 
 
 class PriFile:
     def __init__(self, args):
         audio, sr = args
-        #self.file = file_path
+        # self.file = file_path
         self.audio = audio
         self.sr = sr
         self.loundness = self.calculate_loudness()
