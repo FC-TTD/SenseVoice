@@ -1,7 +1,7 @@
 services:
-  sensevoice-server:
+  asrpri-server:
     image: sensevoice-server:latest
-    container_name: asr
+    container_name: asrpri
     build: .
     ports:
       - "8300:8000"
