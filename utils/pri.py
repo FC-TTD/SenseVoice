@@ -64,15 +64,15 @@ class PriFile:
         rec_result = _model.generate(self.audio)
         # 提取时间戳
         timestamps = rec_result[0]["timestamp"]
-        print(timestamps)
+        # print(timestamps)
         # 计算语音活动总时间（秒）
         total_duration_ms = sum(end - start for start, end in timestamps)
         total_duration_seconds = total_duration_ms / 1000.0
         # 计算总字数
         content = re.findall(r"[\u4e00-\u9fff]", rec_result[0]["text"])
         total_words = len(content)
-        print("total_words:", total_words)
-        print("total_duration_seconds", total_duration_seconds)
+        # print("total_words:", total_words)
+        # print("total_duration_seconds", total_duration_seconds)
         # 计算语速 (WPM)
         wpm = (total_words / total_duration_seconds) * 60
         return wpm
