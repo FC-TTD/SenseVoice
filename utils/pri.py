@@ -95,11 +95,11 @@ class PriFile:
     def mean_measure(self):  # 方案一
         mean_pitch = "{:03d}".format(round(self.pitches["mean"]))
         wpm = "{:03d}".format(round(self.rate))
-        average_loudness = "{:03d}".format(self.loundness["itgr"])
+        average_loudness = "{:03d}".format(round(self.loundness["itgr"]))
         return str(mean_pitch) + str(wpm) + str(average_loudness)
 
     def max_measure(self):  # 方案一
         max_pitch = "{:03d}".format(round(self.pitches["max"]))
         wpm = "{:03d}".format(round(self.rate))
-        max_loudness = "{:03d}".format(self.loundness["max"])
+        max_loudness = "{:03d}".format(round(self.loundness["max"]))
         return str(max_pitch) + str(wpm) + str(max_loudness)
