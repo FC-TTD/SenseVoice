@@ -1,38 +1,28 @@
-# ======================================================
-#   FunASR SenseVoiceSmall Inference Server
-# ======================================================
-FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+# Use the official Python 3.12 base image
+FROM python:3.12-slim
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-	ffmpeg libsndfile1 git && \
-	rm -rf /var/lib/apt/lists/*
-
+# Set the working directory
 WORKDIR /app
-RUN ls -la /app
-# Copy only requirements first
-COPY requirements.txt /app/
 
-# Install dependencies (cached if requirements.txt didn't change)
+# Copy the requirements file into the container
+COPY requirements.txt .
+
+# Install the dependencies
+RUN pip install --upgrade setuptools
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install fastapi[standard]
 
-# Now copy the rest of your code
-COPY . /app
+# Copy the rest of the application code into the container
+COPY . .
 
+# Expose the port FastAPI will run on
+EXPOSE 8000
 
-# Optional: preload model weights during build (saves runtime download)
-# RUN python -c "from funasr import AutoModel; AutoModel(model='iic/SenseVoiceSmall')"
+# Define environment variables
+ENV TMP_DIR=/app/tmp
 
-# Expose FastAPI port
-EXPOSE 50000
+# Create the temporary directory
+RUN mkdir -p $TMP_DIR
 
-# Environment variables
-ENV SENSEVOICE_DEVICE=auto
-ENV PYTHONUNBUFFERED=1
-ENV MODELSCOPE_CACHE=/models
-
-# Create model cache directory (helps reuse between restarts)
-RUN mkdir -p /models
-
-# Start FastAPI app
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "50000"]
+# Set the command to run the FastAPI server
+CMD ["fastapi", "run", "--port", "8000"]

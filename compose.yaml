@@ -1,0 +1,13 @@
+services:
+  sensevoice-server:
+    image: sensevoice-server:latest
+    container_name: asr
+    build: .
+    ports:
+      - "8300:8000"
+    restart: always
+    volumes:
+      - /home/docker/mnt/TTD-Data/cosy-voice/.cache:/root/.cache
+    environment:
+      - TMP_DIR=/app/tmp
+      - SENSEVOICE_DEVICE=cpu #cuda:0

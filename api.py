@@ -2,7 +2,7 @@
 # export SENSEVOICE_DEVICE=cuda:1
 
 import os, re
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from typing_extensions import Annotated
 from typing import List
@@ -11,9 +11,8 @@ import torchaudio
 from model import SenseVoiceSmall
 from funasr.utils.postprocess_utils import rich_transcription_postprocess
 from io import BytesIO
-
-TARGET_FS = 16000
-
+from utils.pri import PriFile
+import soundfile as sf
 
 class Language(str, Enum):
     auto = "auto"
@@ -26,7 +25,9 @@ class Language(str, Enum):
 
 
 model_dir = "iic/SenseVoiceSmall"
-m, kwargs = SenseVoiceSmall.from_pretrained(model=model_dir, device=os.getenv("SENSEVOICE_DEVICE", "cuda:0"))
+m, kwargs = SenseVoiceSmall.from_pretrained(
+    model=model_dir, device=os.getenv("SENSEVOICE_DEVICE", "cuda:0")
+)
 m.eval()
 
 regex = r"<\|.*\|>"
@@ -52,39 +53,31 @@ async def root():
 
 @app.post("/api/v1/asr")
 async def turn_audio_to_text(
-    files: Annotated[List[UploadFile], File(description="wav or mp3 audios in 16KHz")],
-    keys: Annotated[str, Form(description="name of each audio joined with comma")] = None,
+    files: Annotated[List[bytes], File(description="wav or mp3 audios in 16KHz")],
+    keys: Annotated[str, Form(description="name of each audio joined with comma")],
     lang: Annotated[Language, Form(description="language of audio content")] = "auto",
-    use_itn: Annotated[bool, Form(description="apply inverse text normalization")] = False,
 ):
     audios = []
+    audio_fs = 0
     for file in files:
-        file_io = BytesIO(await file.read())
+        file_io = BytesIO(file)
         data_or_path_or_list, audio_fs = torchaudio.load(file_io)
-
-        # transform to target sample
-        if audio_fs != TARGET_FS:
-            resampler = torchaudio.transforms.Resample(orig_freq=audio_fs, new_freq=TARGET_FS)
-            data_or_path_or_list = resampler(data_or_path_or_list)
-
         data_or_path_or_list = data_or_path_or_list.mean(0)
         audios.append(data_or_path_or_list)
-
+        file_io.close()
     if lang == "":
         lang = "auto"
-
-    if not keys:
-        key = [f.filename for f in files]
+    if keys == "":
+        key = ["wav_file_tmp_name"]
     else:
         key = keys.split(",")
-
     res = m.inference(
         data_in=audios,
         language=lang,  # "zh", "en", "yue", "ja", "ko", "nospeech"
-        use_itn=use_itn,
+        use_itn=False,
         ban_emo_unk=False,
         key=key,
-        fs=TARGET_FS,
+        fs=audio_fs,
         **kwargs,
     )
     if len(res) == 0:
@@ -96,7 +89,22 @@ async def turn_audio_to_text(
     return {"result": res[0]}
 
 
-if __name__ == "__main__":
-    import uvicorn
+@app.post("/api/v1/pri")
+async def get_pri_from_file(
+    file: Annotated[bytes, File(description="wav or mp3 audios")],
+):
+    data, sr = sf.read(BytesIO(file))
+    try:
+        pri_data = PriFile((data, sr))
+    except Exception as e:
+        raise HTTPException(status_code=418, detail=f"ERROR: {e}")
 
-    uvicorn.run(app, host="0.0.0.0", port=50000)
+    return {
+        "result": {
+            "mean_pri": pri_data.mean_measure(),
+            "max_pri": pri_data.max_measure(),
+            "rate": pri_data.rate,
+            "loundness": pri_data.loundness,
+            "pitches": pri_data.pitches,
+        }
+    }
