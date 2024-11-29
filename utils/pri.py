@@ -1,11 +1,11 @@
-import numpy as np
-import soundfile as sf
-import pyloudnorm as pyln
 import re
+
 import librosa
+import numpy as np
+import pyloudnorm as pyln
+
 # from modelscope.pipelines import pipeline
 # from modelscope.utils.constant import Tasks
-
 from funasr import AutoModel
 
 _model = AutoModel(model="paraformer-zh")
