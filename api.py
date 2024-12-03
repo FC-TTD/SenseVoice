@@ -1,18 +1,22 @@
 # Set the device with environment, default is cuda:0
 # export SENSEVOICE_DEVICE=cuda:1
 
-import os, re
+import os
+import re
+from enum import Enum
+from io import BytesIO
+from typing import List
+
+import soundfile as sf
+import torchaudio
 from fastapi import FastAPI, File, Form, HTTPException
 from fastapi.responses import HTMLResponse
-from typing_extensions import Annotated
-from typing import List
-from enum import Enum
-import torchaudio
-from model import SenseVoiceSmall
 from funasr.utils.postprocess_utils import rich_transcription_postprocess
-from io import BytesIO
+from typing_extensions import Annotated
+
+from model import SenseVoiceSmall
 from utils.pri import PriFile
-import soundfile as sf
+
 
 class Language(str, Enum):
     auto = "auto"
@@ -74,8 +78,8 @@ async def turn_audio_to_text(
     res = m.inference(
         data_in=audios,
         language=lang,  # "zh", "en", "yue", "ja", "ko", "nospeech"
-        use_itn=False,
-        ban_emo_unk=False,
+        use_itn=True,
+        ban_emo_unk=True,
         key=key,
         fs=audio_fs,
         **kwargs,
