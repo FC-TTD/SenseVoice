@@ -1,5 +1,5 @@
 # Use the official Python 3.12 base image
-FROM python:3.12-slim
+FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
 
 # Set the working directory
 WORKDIR /app
