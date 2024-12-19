@@ -1,22 +1,11 @@
 services:
   asrpri-server:
-    image: sensevoice-server:latest
+    image: asrpri:latest
     container_name: asrpri
     build: .
     ports:
       - "8300:8000"
-    restart: always
-    volumes:
-      - type: volume
-        source: TTD-Data
-        target: /root/.cache
-        volume:
-          nocopy: true
-          subpath: cosy-voice/.cache
+    restart: unless-stopped
     environment:
       - TMP_DIR=/app/tmp
       - SENSEVOICE_DEVICE=cpu #cuda:0
-
-volumes:
-  TTD-Data:
-    external: true
