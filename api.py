@@ -16,7 +16,14 @@ from typing_extensions import Annotated
 
 from model import SenseVoiceSmall
 from utils.pri import PriFile
+import logging
 
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage().find("/docs") == -1
+
+# Filter out /endpoint
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
 class Language(str, Enum):
     auto = "auto"
