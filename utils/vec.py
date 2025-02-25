@@ -58,12 +58,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
 
 class Wav2Vec2VAD:
     def __init__(self):
-        # load model from hub
-        self.device = "cpu"
-        model_name = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
-        processor = Wav2Vec2Processor.from_pretrained(model_name)
-        model = EmotionModel.from_pretrained(model_name).to(self.device)
-
+        self.device = device
         self.model = model
         self.processor = processor
 
@@ -90,11 +85,14 @@ class Wav2Vec2VAD:
         y = y.detach().cpu().numpy().flatten().tolist()
 
         # pretty print
-        y = f"Valence: {int(y[2]*100)} Arousal: {int(y[0]*100)} Dominance: {int(y[1]*100)}"
+        result = f"Valence: {int(y[2]*100)} Arousal: {int(y[0]*100)} Dominance: {int(y[1]*100)} \n ORI(A,D,V): {y}"
 
-        return y
+        return result
 
-
+device = "cpu"
+model_name = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
+processor = Wav2Vec2Processor.from_pretrained(model_name)
+model = EmotionModel.from_pretrained(model_name).to(device)
 # print(process_func(signal, sampling_rate))
 #  Arousal    dominance valence
 # [[0.5460754  0.6062266  0.40431657]]

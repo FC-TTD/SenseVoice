@@ -8,13 +8,21 @@ warnings.filterwarnings("ignore")
 
 
 class AcousticVADAnalyzer:
-    def __init__(self):
+    _instance = None
 
-        # 使用 eGeMAPSv02 特征集
-        self.smile_gemaps = opensmile.Smile(
-            feature_set=opensmile.FeatureSet.eGeMAPSv02,
-            feature_level=opensmile.FeatureLevel.Functionals,
-        )
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(AcousticVADAnalyzer, cls).__new__(cls, *args, **kwargs)
+            cls._instance._initialize()
+        return cls._instance
+
+    def _initialize(self):
+        if not hasattr(self, 'smile_gemaps'):
+            # 使用 eGeMAPSv02 特征集
+            self.smile_gemaps = opensmile.Smile(
+                feature_set=opensmile.FeatureSet.eGeMAPSv02,
+                feature_level=opensmile.FeatureLevel.Functionals,
+            )
 
     def extract_features(self, audio_file):
         """提取音频特征"""
