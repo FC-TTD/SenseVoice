@@ -71,7 +71,7 @@ def launch():
 				inputs=[audio_input],
 				outputs=[output_text]
 			)
-	demo.launch()
+	demo.launch(server_name="0.0.0.0", server_port=7860)
 
 
 if __name__ == "__main__":
