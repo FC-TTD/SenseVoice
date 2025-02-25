@@ -9,3 +9,15 @@ services:
     environment:
       - TMP_DIR=/app/tmp
       - SENSEVOICE_DEVICE=cpu #cuda:0
+  opensmile:
+    image: asrpri:latest
+    container_name: opensmile
+    profiles:
+      - webui
+    ports:
+      - "8301:7860"
+    restart: unless-stopped
+    environment:
+      - TMP_DIR=/app/tmp
+      - SENSEVOICE_DEVICE=cpu #cuda:0
+    command: ["python", "smileui.py"]
