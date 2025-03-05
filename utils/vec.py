@@ -66,7 +66,8 @@ class Wav2Vec2VAD:
         self,
         input: np.ndarray,
         embeddings: bool = False,
-    ) -> str:
+        raw: bool = False,
+    ) -> str | dict[str, int]:
         r"""Predict emotions or extract embeddings from raw audio signal."""
 
         # run through processor to normalize signal
@@ -84,10 +85,16 @@ class Wav2Vec2VAD:
         # convert to numpy
         y = y.detach().cpu().numpy().flatten().tolist()
 
-        # pretty print
-        result = f"Valence: {int(y[2]*100)} Arousal: {int(y[0]*100)} Dominance: {int(y[1]*100)} \n ORI(A,D,V): {y}"
+        result = {
+            "Valence": int(y[2]*100),
+            "Arousal": int(y[0]*100),
+            "Dominance": int(y[1]*100),
+        }
 
-        return result
+        # pretty print
+        result_text = f"Valence: {int(y[2]*100)} Arousal: {int(y[0]*100)} Dominance: {int(y[1]*100)} \n ORI(A,D,V): {y}"
+
+        return raw and result or result_text
 
 device = "cpu"
 model_name = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"

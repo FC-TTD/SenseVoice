@@ -6,6 +6,7 @@ import re
 from enum import Enum
 from io import BytesIO
 from typing import List
+from scipy import signal
 
 import soundfile as sf
 import torchaudio
@@ -16,6 +17,7 @@ from typing_extensions import Annotated
 
 from model import SenseVoiceSmall
 from utils.pri import PriFile
+from utils.vec import Wav2Vec2VAD
 import logging
 
 class EndpointFilter(logging.Filter):
@@ -100,12 +102,37 @@ async def turn_audio_to_text(
     return {"result": res[0]}
 
 
+@app.post("/api/v1/vad")
+async def get_vad_from_file(
+    file: Annotated[bytes, File(description="wav or mp3 audios")],
+):
+    try:
+        data, sr = sf.read(BytesIO(file))
+        vec_extractor = Wav2Vec2VAD()
+        # 计算新的采样点数
+        number_of_samples = round(len(data) * float(16000) / sr)
+        # 对音频数据进行重采样
+        resampled_data = signal.resample(data, number_of_samples)
+        vad_data = vec_extractor.process(resampled_data, raw=True)
+
+    except Exception as e:
+        raise HTTPException(status_code=418, detail=f"ERROR: {e}")
+
+    return {
+        "result": {
+            "v": vad_data.Valence,
+            "a": vad_data.Arousal,
+            "d": vad_data.Dominance,
+        }
+    }
+
+
 @app.post("/api/v1/pri")
 async def get_pri_from_file(
     file: Annotated[bytes, File(description="wav or mp3 audios")],
 ):
-    data, sr = sf.read(BytesIO(file))
     try:
+        data, sr = sf.read(BytesIO(file))
         pri_data = PriFile((data, sr))
     except Exception as e:
         raise HTTPException(status_code=418, detail=f"ERROR: {e}")
