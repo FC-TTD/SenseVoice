@@ -120,9 +120,9 @@ async def get_vad_from_file(
 
     return {
         "result": {
-            "v": vad_data.Valence,
-            "a": vad_data.Arousal,
-            "d": vad_data.Dominance,
+            "v": vad_data.get("Valence", 0),
+            "a": vad_data.get("Arousal", 0),
+            "d": vad_data.get("Dominance", 0),
         }
     }
 
