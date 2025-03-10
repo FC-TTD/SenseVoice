@@ -86,13 +86,13 @@ class Wav2Vec2VAD:
         y = y.detach().cpu().numpy().flatten().tolist()
 
         result = {
-            "Valence": int(y[2]*100),
-            "Arousal": int(y[0]*100),
-            "Dominance": int(y[1]*100),
+            "Valence": min(99, int(y[2]*100)),
+            "Arousal": min(99, int(y[0]*85)),
+            "Dominance": min(99, int(y[1]*100)),
         }
 
         # pretty print
-        result_text = f"Valence: {int(y[2]*100)} Arousal: {int(y[0]*100)} Dominance: {int(y[1]*100)} \n ORI(A,D,V): {y}"
+        result_text = f"Valence: {result['Valence']} Arousal: {result['Arousal']} Dominance: {result['Dominance']} \n ORI(A,D,V): {y}"
 
         return raw and result or result_text
 
