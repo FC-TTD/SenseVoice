@@ -1,0 +1,36 @@
+---
+- name: Create application directory
+  file:
+    path: "{{ app_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Copy application files
+  synchronize:
+    src: "{{ playbook_dir }}/../"
+    dest: "{{ app_dir }}"
+    delete: yes
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=ansible"
+      - "--exclude=.vscode"
+      - "--exclude=.idea"
+      - "--exclude=__pycache__"
+      - "--exclude=*.pyc"
+      - "--exclude=data"
+
+- name: 构建和启动Docker容器
+  shell: |
+    cd {{ app_dir }}
+    docker compose -f docker/docker-compose.yml up -d --build
+  register: docker_output
+
+- name: 显示Docker Compose输出
+  debug:
+    var: docker_output.stdout_lines
+
+#成功后移除 {{ app_dir }}
+- name: Remove application directory
+  file:
+    path: "{{ app_dir }}"
+    state: absent

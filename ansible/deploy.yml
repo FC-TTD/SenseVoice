@@ -1,0 +1,6 @@
+---
+- name: Deploy SenseVoice APP to servers
+  hosts: sensevoice_servers
+  become: yes
+  roles:
+    - sensevoice
