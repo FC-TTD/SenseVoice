@@ -87,7 +87,7 @@ class Wav2Vec2VAD:
 
         result = {
             "Valence": min(99, int(y[2]*100)),
-            "Arousal": min(99, int(y[0]*85)),
+            "Arousal": min(99, int(y[0]*100)),
             "Dominance": min(99, int(y[1]*100)),
         }
 
