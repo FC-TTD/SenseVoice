@@ -19,11 +19,19 @@
       - "--exclude=*.pyc"
       - "--exclude=data"
 
-- name: 构建和启动Docker容器
+- name: 构建和启动Docker容器（标准发布）
   shell: |
     cd {{ app_dir }}
-    docker compose -f docker/docker-compose.yml up -d --build
+    docker compose -f compose.yaml up -d --build
   register: docker_output
+  when: deploy_type is not defined or deploy_type == 'standard'
+
+- name: 构建和启动Docker容器（opensmile发布）
+  shell: |
+    cd {{ app_dir }}
+    docker compose -f compose.yaml --profile webui up -d --build
+  register: docker_output
+  when: deploy_type is defined and deploy_type == 'opensmile'
 
 - name: 显示Docker Compose输出
   debug:

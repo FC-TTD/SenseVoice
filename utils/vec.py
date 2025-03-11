@@ -85,16 +85,38 @@ class Wav2Vec2VAD:
         # convert to numpy
         y = y.detach().cpu().numpy().flatten().tolist()
 
-        result = {
-            "Valence": min(99, int(y[2]*100)),
-            "Arousal": min(99, int(y[0]*100)),
-            "Dominance": min(99, int(y[1]*100)),
-        }
+        result = self.format_vad(y)
 
         # pretty print
         result_text = f"Valence: {result['Valence']} Arousal: {result['Arousal']} Dominance: {result['Dominance']} \n ORI(A,D,V): {y}"
 
         return raw and result or result_text
+    
+    def format_vad(self, vad: np.array) -> dict[str, int]:
+        r"""曲线特征：
+        x ≤ 60	        y = x 严格线性	        (30,30) (60,60)
+        60 < x ≤ 90	    平缓衰减，差距增长较慢	    (75,73.79)
+        90 < x <110	    加速衰减，差距快速增大	    (100,93.5)
+        x ≥ 110	        恒定值 99	            (110,99)"""
+        
+        def fixed_custom_curve(x):
+            if x <= 60:
+                return x
+            elif 60 < x <= 90:
+                a = 6 / (30**1.5)  # 保证x=90时差距为6
+                return x - a * (x - 60)**1.5
+            elif 90 < x < 110:
+                return x - (6 + 0.0125 * (x - 90)**2)
+            else:
+                return 99
+
+        return {
+            "Valence": int(fixed_custom_curve(vad[2]*100)),
+            "Arousal": int(fixed_custom_curve(vad[0]*100)),
+            "Dominance": int(fixed_custom_curve(vad[1]*100)),
+            "raw": vad,
+        }
+
 
 device = "cpu"
 model_name = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"

@@ -1,6 +1,8 @@
 ---
 - name: Deploy SenseVoice APP to servers
-  hosts: sensevoice_servers
+  hosts: "{{ target_hosts | default('sensevoice_servers') }}"
   become: yes
+  vars:
+    deploy_type: "{{ deploy_type | default('standard') }}"
   roles:
     - sensevoice

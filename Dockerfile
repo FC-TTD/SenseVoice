@@ -24,5 +24,7 @@ ENV TMP_DIR=/app/tmp
 # Create the temporary directory
 RUN mkdir -p $TMP_DIR
 
+VOLUME /root/.cache
+
 # Set the command to run the FastAPI server
 CMD ["fastapi", "run", "--port", "8000"]
