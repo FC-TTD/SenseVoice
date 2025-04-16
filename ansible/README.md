@@ -1,8 +1,8 @@
-# Emotion 2.0 APP 部署文档
+# SenseVoice APP 部署文档
 
 ## 部署概述
 
-本文档描述了如何使用Ansible和Docker Compose将Emotion 2.0 APP部署到ttd-worker和ttd-edge服务器上。
+本文档描述了如何使用Ansible和Docker Compose将SenseVoice APP部署到ttd-worker和ttd-edge服务器上。
 
 ## 前提条件
 
@@ -26,12 +26,12 @@ ttd-edge ansible_host=<实际IP地址> ansible_user=<用户名>
 
 ### 2. 配置部署参数
 
-如果需要，可以修改`roles/emotion/defaults/main.yml`中的默认参数：
+如果需要，可以修改`roles/sensevoice/defaults/main.yml`中的默认参数：
 
 ```yaml
-app_dir: /opt/emotion  # 应用部署目录
-data_dir: /opt/emotion/data  # 数据目录
-app_port: 7860  # 应用端口
+app_dir: /opt/sensevoice  # 应用部署目录
+data_dir: /opt/sensevoice/data  # 数据目录
+app_port: 7086  # 应用端口
 ```
 
 ### 3. 执行部署
@@ -54,11 +54,11 @@ ansible-playbook deploy.yml -l ttd-edge    # 只部署到ttd-edge
 
 部署完成后，可以通过以下方式验证：
 
-1. 访问 `http://<服务器IP>:7860` 查看应用是否正常运行
+1. 访问 `http://<服务器IP>:7086` 查看应用是否正常运行
 2. 检查Docker容器状态：
 
 ```bash
-ssh <用户名>@<服务器IP> "docker ps | grep emotion"
+ssh <用户名>@<服务器IP> "docker ps | grep sensevoice"
 ```
 
 ## 故障排除
@@ -69,20 +69,20 @@ ssh <用户名>@<服务器IP> "docker ps | grep emotion"
 2. 登录服务器，检查Docker容器日志：
 
 ```bash
-docker logs emotion-app
+docker logs sensevoice-app
 docker logs ttd-server
 ```
 
 3. 检查Docker Compose配置：
 
 ```bash
-cat /opt/emotion/docker-compose.yml
+cat /opt/sensevoice/docker-compose.yml
 ```
 
 4. 如果需要重新部署，可以先停止并删除现有容器：
 
 ```bash
-cd /opt/emotion
+cd /opt/sensevoice
 docker-compose down
 ```
 
@@ -100,9 +100,9 @@ ansible-playbook deploy.yml
 
 ### 备份数据
 
-数据目录位于服务器的`/opt/emotion/data`，可以通过以下命令备份：
+数据目录位于服务器的`/opt/sensevoice/data`，可以通过以下命令备份：
 
 ```bash
-ssh <用户名>@<服务器IP> "tar -czf /tmp/emotion-data-backup.tar.gz /opt/emotion/data"
-scp <用户名>@<服务器IP>:/tmp/emotion-data-backup.tar.gz ./
+ssh <用户名>@<服务器IP> "tar -czf /tmp/sensevoice-data-backup.tar.gz /opt/sensevoice/data"
+scp <用户名>@<服务器IP>:/tmp/sensevoice-data-backup.tar.gz ./
 ```

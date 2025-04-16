@@ -8,15 +8,14 @@ import pyloudnorm as pyln
 # from modelscope.utils.constant import Tasks
 from funasr import AutoModel
 
-_model = AutoModel(model="paraformer-zh", ncpu=64)
-
 
 class PriFile:
-    def __init__(self, args):
+    def __init__(self, args, model=None):
         audio, sr = args
         # self.file = file_path
         self.audio = audio
         self.sr = sr
+        self.model = model  
         self.loundness = self.calculate_loudness()
         self.rate = self.funasr_speechspeed_measure()
         self.pitches = self.pitch_measure()
@@ -61,7 +60,13 @@ class PriFile:
         # )
 
         # rec_result = inference_pipeline(audio_path)
-        rec_result = _model.generate(self.audio)
+        if self.model is None:
+            # 如果没有传入模型，则创建一个临时模型
+            temp_model = AutoModel(model="paraformer-zh")
+            rec_result = temp_model.generate(self.audio)
+        else:
+            # 使用传入的模型
+            rec_result = self.model.generate(self.audio)
         # 提取时间戳
         timestamps = rec_result[0]["timestamp"]
         # print(timestamps)

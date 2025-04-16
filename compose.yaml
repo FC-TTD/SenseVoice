@@ -9,6 +9,9 @@ services:
     environment:
       - TMP_DIR=/app/tmp
       - SENSEVOICE_DEVICE=cpu #cuda:0
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+      - UVICORN_LOG_LEVEL=info
   opensmile:
     image: asrpri:latest
     container_name: opensmile

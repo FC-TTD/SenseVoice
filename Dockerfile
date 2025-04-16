@@ -26,5 +26,5 @@ RUN mkdir -p $TMP_DIR
 
 VOLUME /root/.cache
 
-# Set the command to run the FastAPI server
-CMD ["fastapi", "run", "--port", "8000"]
+# 使用 uvicorn 直接启动应用，确保日志正确输出
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]
