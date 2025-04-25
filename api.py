@@ -133,7 +133,7 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         try:
             # 设置请求超时时间（秒）
-            timeout = int(os.getenv("SENSEVOICE_REQUEST_TIMEOUT", "60"))
+            timeout = int(os.getenv("SENSEVOICE_REQUEST_TIMEOUT", "600"))
             # 使用 asyncio.wait_for 设置超时
             response = await asyncio.wait_for(call_next(request), timeout=timeout)
             return response
@@ -299,7 +299,7 @@ async def turn_audio_to_text(
         # 使用线程池提交任务，设置超时
         future = thread_pool.submit(background_process_asr, files, key, lang, background_tasks)
         # 设置超时时间（秒）
-        timeout = int(os.getenv("SENSEVOICE_TASK_TIMEOUT", "30"))
+        timeout = int(os.getenv("SENSEVOICE_TASK_TIMEOUT", "600"))
         result = future.result(timeout=timeout)
         
         process_time = time.time() - start_time
@@ -373,7 +373,7 @@ async def get_vad_from_file(
         # 使用线程池处理 VAD，设置超时
         future = thread_pool.submit(process_vad, file)
         # 设置超时时间（秒）
-        timeout = int(os.getenv("SENSEVOICE_TASK_TIMEOUT", "30"))
+        timeout = int(os.getenv("SENSEVOICE_TASK_TIMEOUT", "600"))
         vad_data = future.result(timeout=timeout)
         
         if vad_data is None:
@@ -447,7 +447,7 @@ async def get_pri_from_file(
         # 使用线程池处理 PRI，设置超时
         future = thread_pool.submit(process_pri, file)
         # 设置超时时间（秒）
-        timeout = int(os.getenv("SENSEVOICE_TASK_TIMEOUT", "30"))
+        timeout = int(os.getenv("SENSEVOICE_TASK_TIMEOUT", "600"))
         pri_data = future.result(timeout=timeout)
         
         if pri_data is None:

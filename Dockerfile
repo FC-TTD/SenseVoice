@@ -20,6 +20,8 @@ EXPOSE 8000
 
 # Define environment variables
 ENV TMP_DIR=/app/tmp
+ENV UVICORN_TIMEOUT=600
+ENV UVICORN_TIMEOUT_KEEP_ALIVE=120
 
 # Create the temporary directory
 RUN mkdir -p $TMP_DIR
