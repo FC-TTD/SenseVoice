@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  asrpri:
+    image: registry:5000/sensevoice/asrpri:latest
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+    volumes:
+      - cache:/root/.cache
+    environment:
+      - TMP_DIR=/app/tmp
+      - SENSEVOICE_DEVICE=cpu #cuda:0
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+      - UVICORN_LOG_LEVEL=info
+    networks:
+      - caddy
+
+networks:
+  caddy:
+    external: true
+
+volumes:
+  cache:

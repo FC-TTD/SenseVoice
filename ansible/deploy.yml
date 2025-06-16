@@ -1,8 +1,59 @@
 ---
-- name: Deploy SenseVoice APP to servers
-  hosts: "{{ target_hosts | default('sensevoice_servers') }}"
-  become: yes
+- name: 部署 SenseVoice 服务
+  hosts: localhost
+  gather_facts: yes
   vars:
-    deploy_type: "{{ deploy_type | default('standard') }}"
+    # 项目基本信息
+    project_name: "sensevoice"
+    project_path: "{{ playbook_dir }}/.."
+    docker_dir: "{{ project_path }}/docker"
+    compose_file: "{{ docker_dir }}/docker-stack.yml"
+    dockerfile: "{{ docker_dir }}/Dockerfile"
+    image_name: "asrpri"
+    image_tag: "latest"
+
+    # rsync配置
+    rsync_opts:
+      - "--exclude=*/__pycache__"
+      - "--exclude=*/.pytest_cache"
+      - "--exclude=*/.git"
+      - "--exclude=*/logs/*"
+      - "--exclude=*.pyc"
+      - "--include=docker/"
+      - "--include=utils/"
+      - "--include=model/"
+      - "--include=data/"
+      - "--include=docker/Dockerfile"
+      - "--include=docker/docker-stack.yml"
+      - "--include=requirements.txt"
+      - "--include=api.py"
+      - "--include=model.py"
+      - "--include=smileui.py"
+      - "--include=utils/**"
+      - "--include=model/**"
+      - "--include=data/**"
+      - "--exclude=*"
+    
+    # 环境变量
+    env_vars:
+      DOMAIN: "sensevoice.local"
+      DOMAIN_WEBUI: "webui.sensevoice.local"
+      SENSEVOICE_DEVICE: "cpu"
+
   roles:
-    - sensevoice
+    # 使用Docker CI/CD角色
+    - role: /workspace/z/roles/docker_ci_cd
+      vars:
+        # CI相关变量
+        ci_project_name: "{{ project_name }}"
+        ci_project_path: "{{ project_path }}"
+        ci_dockerfile_path: "{{ dockerfile }}"
+        ci_registry_url: "{{ registry_url }}"
+        ci_image_name: "{{ image_name }}"
+        ci_image_tag: "{{ image_tag }}"
+        ci_compose_file_path: "{{ compose_file }}"
+        ci_build_host: "{{ build_host }}"
+        ci_rsync_opts: "{{ rsync_opts }}"
+        ci_skip_build: false # 临时跳过构建
+        pt_stack_name: "{{ project_name }}"
+      tags: [docker, ci, cd]

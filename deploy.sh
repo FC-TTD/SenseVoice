@@ -54,7 +54,7 @@ else
     echo "部署类型: 标准 (目标: $TARGET_HOSTS)"
 fi
 
-ANSIBLE_CONFIG="$ANSIBLE_DIR/ansible.cfg" ansible-playbook -i "$INVENTORY_FILE" "$PLAYBOOK_FILE" -e "deploy_type=$DEPLOY_TYPE target_hosts=$TARGET_HOSTS" $ANSIBLE_ARGS
+ANSIBLE_STDOUT_CALLBACK=debug ANSIBLE_CONFIG="$ANSIBLE_DIR/ansible.cfg" ansible-playbook -i "$INVENTORY_FILE" "$PLAYBOOK_FILE" -e "deploy_type=$DEPLOY_TYPE target_hosts=$TARGET_HOSTS" $ANSIBLE_ARGS
 
 # 检查部署结果
 if [ $? -eq 0 ]; then
