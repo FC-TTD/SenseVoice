@@ -205,7 +205,6 @@ setup_cuda_health(
     app,
     path="/health",
     ready_predicate=lambda: model is not None,
-    track_path_prefixes=("/api/v1/",),
 )
 logger.info("已启用 fastapi-cuda-health 插件并挂载 /health")
 
