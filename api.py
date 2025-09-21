@@ -29,7 +29,7 @@ import asyncio
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
-from fastapi_cuda_health.plugin import setup_cuda_health
+from fastapi_cuda_health import setup_cuda_health
 
 # 添加日志过滤器，用于过滤健康检查和文档请求的日志
 class EndpointFilter(logging.Filter):

@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir onnx onnxconverter_common \
 # Install private health plugin from index (package provided by internal PyPI)
 RUN pip install --no-cache-dir \
     --extra-index-url http://pypi-server/simple/ --trusted-host pypi-server \
-    fastapi-cuda-health>=0.2.0
+    fastapi-cuda-health
 
 # Copy the application code into the container
 # 注意：这里我们不再直接复制所有文件，而是在CI/CD过程中通过rsync控制复制内容
