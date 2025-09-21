@@ -24,7 +24,6 @@
       - "--include=model/"
       - "--include=data/"
       - "--include=docker/Dockerfile"
-      - "--include=docker/docker-stack.yml"
       - "--include=requirements.txt"
       - "--include=api.py"
       - "--include=model.py"
@@ -42,7 +41,7 @@
 
   roles:
     # 使用Docker CI/CD角色
-    - role: /workspace/z/roles/docker_ci_cd
+    - role: /workspace/z/ansible/roles/docker_ci_cd
       vars:
         # CI相关变量
         ci_project_name: "{{ project_name }}"

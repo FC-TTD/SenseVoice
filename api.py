@@ -29,6 +29,7 @@ import asyncio
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+from fastapi_cuda_health.plugin import setup_cuda_health
 
 # 添加日志过滤器，用于过滤健康检查和文档请求的日志
 class EndpointFilter(logging.Filter):
@@ -198,10 +199,15 @@ app = FastAPI(lifespan=lifespan)
 # 添加超时中间件
 app.add_middleware(TimeoutMiddleware)
 
-# 添加健康检查端点
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
+# 使用私有 CUDA 健康检查插件，统一 /health 行为
+# 使用路径前缀跟踪 /api/v1/* 推理接口；/health 与 /docs 访问日志将由插件抑制
+setup_cuda_health(
+    app,
+    path="/health",
+    ready_predicate=lambda: model is not None,
+    track_path_prefixes=("/api/v1/",),
+)
+logger.info("已启用 fastapi-cuda-health 插件并挂载 /health")
 
 regex = r"<\|.*\|>"
 

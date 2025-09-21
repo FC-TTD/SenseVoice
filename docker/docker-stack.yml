@@ -9,8 +9,11 @@ services:
         constraints:
           - node.role == worker
       restart_policy:
-        condition: on-failure
+        condition: any
         max_attempts: 3
+      labels:
+        caddy: "http://asrpri-api:80"
+        caddy.reverse_proxy: "{{upstreams 8000}}"
     volumes:
       - cache:/root/.cache
     environment:
