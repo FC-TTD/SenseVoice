@@ -1,35 +1,37 @@
 # Set the device with environment, default is cuda:0
 # export SENSEVOICE_DEVICE=cuda:1
 
-import os
-import re
+import asyncio
+from contextlib import asynccontextmanager
 from enum import Enum
 from io import BytesIO
-from typing import List, Dict, Any, Union
-import concurrent.futures
-import torch
-import torch.multiprocessing as mp
-import soundfile as sf
-import torchaudio
-from fastapi import FastAPI, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse
-from funasr.utils.postprocess_utils import rich_transcription_postprocess
-from typing_extensions import Annotated
-from pydantic import BaseModel, Field
-from model import SenseVoiceSmall
-from utils.pri import PriFile
-from utils.vec import Wav2Vec2VAD
 import logging
+import os
+import re
 import sys
-from contextlib import asynccontextmanager
-from funasr import AutoModel
-import traceback
 import time
-import asyncio
+import traceback
+from typing import Any, Dict, List, Union
+
+from fastapi import FastAPI, File, Form, HTTPException
+from funasr import AutoModel
+from funasr.utils.postprocess_utils import rich_transcription_postprocess
+import gradio as gr
+from pydantic import BaseModel, Field
+import soundfile as sf
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
-from fastapi_cuda_health import setup_cuda_health
+import torch
+import torch.multiprocessing as mp
+import torchaudio
+from ttd_fastapi_utils import setup_cuda_health
+from typing_extensions import Annotated
+
+from asrsrt import create_gradio_app
+from model import SenseVoiceSmall
+from utils.pri import PriFile
+from utils.vec import Wav2Vec2VAD
 
 # 添加日志过滤器，用于过滤健康检查和文档请求的日志
 class EndpointFilter(logging.Filter):
@@ -59,16 +61,11 @@ logger.addHandler(console_handler)
 # 应用日志过滤器
 logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
-# 设置 PyTorch 使用所有可用的 CPU 核心进行并行计算
-# 获取系统 CPU 核心数
-cpu_count = os.cpu_count()
-pytorch_num_threads = int(cpu_count * 0.9)
-thread_pool_size = int(cpu_count * 2)
-# 设置 PyTorch 线程数 - 增加线程数以提高 CPU 利用率
-torch.set_num_threads(pytorch_num_threads)
-# 启用 PyTorch 的并行优化，增加线程数
-torch.set_num_interop_threads(2)
-# 设置多进程启动方法为 spawn，避免 fork 导致的问题
+"""并发模型：uvicorn N 个 worker + Torch 默认线程自动调度。
+不强制设置 Torch 线程数，不使用应用内线程池，尽量减少调度开销。
+"""
+# 获取系统 CPU 核心数（仅用于日志/初始化参考）
+cpu_count = os.cpu_count() or 1
 try:
     mp.set_start_method('spawn', force=True)
 except RuntimeError:
@@ -122,10 +119,9 @@ class Language(str, Enum):
     ko = "ko"
     nospeech = "nospeech"
 
-# 全局变量用于存储模型实例和线程池
+# 全局变量用于存储模型实例
 model = None
 model_kwargs = None
-thread_pool = None
 vad_processor = None
 pri_model = None  # 用于 PRI 处理的 FunASR 模型
 
@@ -159,13 +155,9 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 应用启动时执行
-    global model, model_kwargs, thread_pool, vad_processor, pri_model
+    global model, model_kwargs, vad_processor, pri_model
     
     try:
-        # 创建线程池，用于并行处理请求
-        # 线程池大小根据环境变量设置
-        thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=thread_pool_size)
-        
         # 加载模型
         model_dir = "iic/SenseVoiceSmall"
         pid = os.getpid()
@@ -179,11 +171,11 @@ async def lifespan(app: FastAPI):
         vad_processor = Wav2Vec2VAD()
         
         # 初始化 PRI 处理的 FunASR 模型，使用环境变量设置的 CPU 核心数
-        logger.info(f"Worker {pid}: 初始化 PRI 模型，使用 {cpu_count} 个 CPU 核心")
-        pri_model = AutoModel(model="paraformer-zh", ncpu=cpu_count)
+        logger.info(f"Worker {pid}: 初始化 PRI 模型")
+        pri_model = AutoModel(model="paraformer-zh", device=os.getenv("SENSEVOICE_DEVICE", "cpu"))
         
         logger.info(f"Worker {pid}: 模型加载成功")
-        logger.info(f"Worker {pid}: PyTorch 线程数: {pytorch_num_threads}, 线程池大小: {thread_pool_size}, CPU 核心数: {cpu_count}")
+        logger.info(f"Worker {pid}: CPU 核心数: {cpu_count}")
         
         yield  # 这里是应用运行期间
     except Exception as e:
@@ -192,8 +184,6 @@ async def lifespan(app: FastAPI):
     finally:
         # 应用关闭时执行的清理代码
         logger.info(f"Worker {pid}: 正在清理资源...")
-        if thread_pool:
-            thread_pool.shutdown()
 
 app = FastAPI(lifespan=lifespan)
 # 添加超时中间件
@@ -206,24 +196,10 @@ setup_cuda_health(
     path="/health",
     ready_predicate=lambda: model is not None,
 )
-logger.info("已启用 fastapi-cuda-health 插件并挂载 /health")
 
 regex = r"<\|.*\|>"
 
-@app.get("/", response_class=HTMLResponse)
-async def root() -> HTMLResponse:
-    return """
-    <!DOCTYPE html>
-    <html>
-        <head>
-            <meta charset=utf-8>
-            <title>Api information</title>
-        </head>
-        <body>
-            <a href='./docs'>Documents of API</a>
-        </body>
-    </html>
-    """
+# 根路径将由 Gradio 界面接管，原有占位页面移除，避免与挂载冲突
 
 # 使用 PyTorch JIT 优化音频处理函数
 @torch.jit.script
@@ -235,9 +211,6 @@ def preprocess_audio(audio_data: torch.Tensor) -> torch.Tensor:
 def process_audio(file_data):
     try:
         start_time = time.time()
-        # 允许使用更多线程进行音频处理，提高并行度
-        local_threads = max(4, pytorch_num_threads // 2)
-        torch.set_num_threads(local_threads)
         
         file_io = BytesIO(file_data)
         data_or_path_or_list, fs = torchaudio.load(file_io)
@@ -250,8 +223,8 @@ def process_audio(file_data):
         logger.error(f"处理音频文件时出错: {str(e)}\n{traceback.format_exc()}")
         return None, 0
 
-# 使用后台任务处理长时间运行的操作
-def background_process_asr(file_data, key, lang, background_tasks):
+
+def background_process_asr(file_data, key, lang):
     try:
         audio, audio_fs = process_audio(file_data)
         if audio is None:
@@ -285,12 +258,11 @@ def background_process_asr(file_data, key, lang, background_tasks):
 
 @app.post("/api/v1/asr", response_model=ASRResponse)
 async def turn_audio_to_text(
-    background_tasks: BackgroundTasks,
     files: Annotated[bytes, File(description="wav or mp3 audio in 16KHz")],
     key: Annotated[str, Form(description="name of audio file")] = "wav_file_tmp_name",
     lang: Annotated[Language, Form(description="language of audio content")] = "auto",
 ) -> Dict[str, List[Dict[str, Any]]]:
-    global model, model_kwargs, thread_pool
+    global model, model_kwargs
     
     if lang == "":
         lang = "auto"
@@ -301,18 +273,12 @@ async def turn_audio_to_text(
     start_time = time.time()
     
     try:
-        # 使用线程池提交任务，设置超时
-        future = thread_pool.submit(background_process_asr, files, key, lang, background_tasks)
-        # 设置超时时间（秒）
-        timeout = int(os.getenv("SENSEVOICE_TASK_TIMEOUT", "600"))
-        result = future.result(timeout=timeout)
+        # 同步执行，最大化单请求推理速度；整体并发由多 worker 进程承载
+        result = background_process_asr(files, key, lang)
         
         process_time = time.time() - start_time
         logger.info(f"ASR 请求处理完成: key={key}, 耗时={process_time:.2f}秒")
         return result
-    except concurrent.futures.TimeoutError:
-        logger.error(f"ASR 处理超时: key={key}")
-        raise HTTPException(status_code=503, detail="处理请求超时")
     except Exception as e:
         logger.error(f"ASR 处理异常: key={key}, 错误={str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
@@ -340,9 +306,6 @@ def resample_audio(data: torch.Tensor, orig_sr: int, target_sr: int = 16000) -> 
 def process_vad(file_data):
     try:
         start_time = time.time()
-        # 允许使用更多线程，提高并行度
-        local_threads = max(4, pytorch_num_threads // 2)
-        torch.set_num_threads(local_threads)
         
         data, sr = sf.read(BytesIO(file_data))
         # 转换为 PyTorch Tensor 并使用 JIT 优化的重采样函数
@@ -369,17 +332,14 @@ def process_vad(file_data):
 async def get_vad_from_file(
     file: Annotated[bytes, File(description="wav or mp3 audios")],
 ) -> Dict[str, Dict[str, Union[float, List[float]]]]:
-    global thread_pool, vad_processor
+    global vad_processor
     
     logger.debug(f"收到 VAD 请求: 文件大小={len(file)} 字节")
     start_time = time.time()
     
     try:
-        # 使用线程池处理 VAD，设置超时
-        future = thread_pool.submit(process_vad, file)
-        # 设置超时时间（秒）
-        timeout = int(os.getenv("SENSEVOICE_TASK_TIMEOUT", "600"))
-        vad_data = future.result(timeout=timeout)
+        # 同步执行，最大化单请求速度
+        vad_data = process_vad(file)
         
         if vad_data is None:
             raise HTTPException(status_code=500, detail="VAD 处理失败")
@@ -387,9 +347,6 @@ async def get_vad_from_file(
         process_time = time.time() - start_time
         logger.info(f"VAD 请求处理完成: 大小={len(file)} 耗时={process_time:.2f}秒")
         
-    except concurrent.futures.TimeoutError:
-        logger.error("VAD 处理超时")
-        raise HTTPException(status_code=503, detail="处理请求超时")
     except Exception as e:
         logger.error(f"VAD 处理异常: 错误={str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
@@ -407,9 +364,6 @@ async def get_vad_from_file(
 def process_pri(file_data):
     try:
         start_time = time.time()
-        # 允许使用更多线程，提高并行度
-        local_threads = max(4, pytorch_num_threads // 2)
-        torch.set_num_threads(local_threads)
         
         global pri_model
         # 使用 with 语句确保资源正确释放
@@ -443,17 +397,14 @@ def process_pri(file_data):
 async def get_pri_from_file(
     file: Annotated[bytes, File(description="wav or mp3 audios")],
 ) -> Dict[str, Dict[str, Union[float, List[float]]]]:
-    global thread_pool
+    global pri_model
     
     logger.debug(f"收到 PRI 请求: 文件大小={len(file)} 字节")
     start_time = time.time()
     
     try:
-        # 使用线程池处理 PRI，设置超时
-        future = thread_pool.submit(process_pri, file)
-        # 设置超时时间（秒）
-        timeout = int(os.getenv("SENSEVOICE_TASK_TIMEOUT", "600"))
-        pri_data = future.result(timeout=timeout)
+        # 同步执行，最大化单请求速度
+        pri_data = process_pri(file)
         
         if pri_data is None:
             raise HTTPException(status_code=500, detail="PRI 处理失败")
@@ -461,9 +412,6 @@ async def get_pri_from_file(
         process_time = time.time() - start_time
         logger.info(f"PRI 请求处理完成: 大小={len(file)} 耗时={process_time:.2f}秒")
         
-    except concurrent.futures.TimeoutError:
-        logger.error("PRI 处理超时")
-        raise HTTPException(status_code=503, detail="处理请求超时")
     except Exception as e:
         logger.error(f"PRI 处理异常: 错误={str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
@@ -471,3 +419,6 @@ async def get_pri_from_file(
     return {
         "result": pri_data
     }
+
+# 将 Gradio 应用挂载到根路径，放在最后以确保 /api/* 等更具体路由优先生效
+gr.mount_gradio_app(app, create_gradio_app(default_language="auto"), path="/")

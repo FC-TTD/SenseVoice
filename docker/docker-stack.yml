@@ -12,8 +12,10 @@ services:
         condition: any
         max_attempts: 3
       labels:
-        caddy: "http://asrpri-api:80"
-        caddy.reverse_proxy: "{{upstreams 8000}}"
+        caddy_0: "http://asrpri-api:80"
+        caddy_0.reverse_proxy: "{{upstreams 8000}}"
+        caddy_1: "http://asrsrt:80"
+        caddy_1.reverse_proxy: "{{upstreams 8000}}"
     volumes:
       - cache:/root/.cache
     environment:

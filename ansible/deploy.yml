@@ -27,7 +27,7 @@
       - "--include=requirements.txt"
       - "--include=api.py"
       - "--include=model.py"
-      - "--include=smileui.py"
+      - "--include=asrsrt.py"
       - "--include=utils/**"
       - "--include=model/**"
       - "--include=data/**"
