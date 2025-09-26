@@ -55,4 +55,5 @@
         ci_rsync_opts: "{{ rsync_opts }}"
         ci_skip_build: false # 临时跳过构建
         pt_stack_name: "{{ project_name }}"
+        pt_force_recreate_stack: true
       tags: [docker, ci, cd]

@@ -199,8 +199,6 @@ setup_cuda_health(
 
 regex = r"<\|.*\|>"
 
-# 根路径将由 Gradio 界面接管，原有占位页面移除，避免与挂载冲突
-
 # 使用 PyTorch JIT 优化音频处理函数
 @torch.jit.script
 def preprocess_audio(audio_data: torch.Tensor) -> torch.Tensor:
@@ -421,4 +419,4 @@ async def get_pri_from_file(
     }
 
 # 将 Gradio 应用挂载到根路径，放在最后以确保 /api/* 等更具体路由优先生效
-gr.mount_gradio_app(app, create_gradio_app(default_language="auto"), path="/")
+# gr.mount_gradio_app(app, create_gradio_app(default_language="auto"), path="/")
