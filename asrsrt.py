@@ -127,9 +127,9 @@ def create_gradio_app(default_language: str = "auto") -> gr.Blocks:
     with gr.Blocks(theme=gr.themes.Soft()) as demo:
         with gr.Row():
             with gr.Column():
-                audio_inputs = gr.Audio(label="Upload audio or use the microphone")
+                audio_inputs = gr.Audio(label="上传音频或使用麦克风")
             with gr.Column():
-                with gr.Accordion("Configuration"):
+                with gr.Accordion("配置"):
                     language_inputs = gr.Dropdown(
                         choices=[
                             "auto",
@@ -141,12 +141,12 @@ def create_gradio_app(default_language: str = "auto") -> gr.Blocks:
                             "nospeech",
                         ],
                         value=default_language,
-                        label="Language",
+                        label="识别语言（似乎只支持中文和英文）",
                     )
-                fn_button = gr.Button("Start", variant="primary")
+                fn_button = gr.Button("开始识别", variant="primary")
         with gr.Row():
-            asr_outputs = gr.Textbox(label="ASR Results", lines=30, show_copy_button=True)
-            srt_outputs = gr.Textbox(label="SRT Results", lines=30, show_copy_button=True)
+            asr_outputs = gr.Textbox(label="ASR 结果", lines=30, show_copy_button=True)
+            srt_outputs = gr.Textbox(label="SRT 结果", lines=30, show_copy_button=True)
 
         fn_button.click(
             infer,
