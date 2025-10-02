@@ -7,7 +7,7 @@ services:
       mode: global
       placement:
         constraints:
-          - node.role == worker
+          - node.labels.cpu == 1 # 只在 CPU 节点上部署
       restart_policy:
         condition: any
         max_attempts: 3
@@ -28,6 +28,11 @@ services:
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=INFO
       - UVICORN_LOG_LEVEL=info
+      # 动态加载配置
+      - UVICORN_WORKERS=1
+      - MAX_CONCURRENT_REQUESTS=32
+      - MODEL_IDLE_TIMEOUT=1800
+      - ENABLE_AUTO_UNLOAD=true
     networks:
       - caddy
 
@@ -38,7 +43,7 @@ services:
       replicas: 1
       placement:
         constraints:
-          - node.hostname == ttd-edge
+          - node.hostname == ttd-nest
       restart_policy:
         condition: any
         max_attempts: 3

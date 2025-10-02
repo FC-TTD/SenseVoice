@@ -34,11 +34,14 @@ COPY . .
   # Expose the port FastAPI will run on
   EXPOSE 8000
   
-# Define environment variables（采用 uvicorn 多 worker + Torch 自动线程）
+# Define environment variables（单进程 + 动态线程池 + 延迟加载模型）
 ENV TMP_DIR=/app/tmp
 ENV UVICORN_TIMEOUT=600
 ENV UVICORN_TIMEOUT_KEEP_ALIVE=120
-ENV UVICORN_WORKERS=4
+ENV UVICORN_WORKERS=1
+ENV MAX_CONCURRENT_REQUESTS=32
+ENV MODEL_IDLE_TIMEOUT=1800
+ENV ENABLE_AUTO_UNLOAD=true
 
 # Create the temporary directory
 RUN mkdir -p $TMP_DIR

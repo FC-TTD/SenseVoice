@@ -58,9 +58,18 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
 
 class Wav2Vec2VAD:
     def __init__(self):
-        self.device = device
-        self.model = model
-        self.processor = processor
+        self.device = "cpu"
+        self.model = None
+        self.processor = None
+        self._initialized = False
+    
+    def _ensure_loaded(self):
+        """延迟加载模型（首次调用时加载）"""
+        if not self._initialized:
+            model_name = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
+            self.processor = Wav2Vec2Processor.from_pretrained(model_name)
+            self.model = EmotionModel.from_pretrained(model_name).to(self.device)
+            self._initialized = True
 
     def process(
         self,
@@ -69,6 +78,9 @@ class Wav2Vec2VAD:
         raw: bool = False,
     ) -> str | dict[str, int]:
         r"""Predict emotions or extract embeddings from raw audio signal."""
+        
+        # 确保模型已加载
+        self._ensure_loaded()
 
         # run through processor to normalize signal
         # always returns a batch, so we just get the first entry
@@ -116,17 +128,3 @@ class Wav2Vec2VAD:
             "Dominance": int(fixed_custom_curve(vad[1]*100)),
             "raw": vad,
         }
-
-
-device = "cpu"
-model_name = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
-processor = Wav2Vec2Processor.from_pretrained(model_name)
-model = EmotionModel.from_pretrained(model_name).to(device)
-# print(process_func(signal, sampling_rate))
-#  Arousal    dominance valence
-# [[0.5460754  0.6062266  0.40431657]]
-
-# print(process_func(signal, sampling_rate, embeddings=True))
-# Pooled hidden states of last transformer layer
-# [[-0.00752167  0.0065819  -0.00746342 ...  0.00663632  0.00848748
-#    0.00599211]]

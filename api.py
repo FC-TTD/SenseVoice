@@ -2,6 +2,7 @@
 # export SENSEVOICE_DEVICE=cuda:1
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from enum import Enum
 from io import BytesIO
@@ -32,6 +33,7 @@ from asrsrt import create_gradio_app
 from model import SenseVoiceSmall
 from utils.pri import PriFile
 from utils.vec import Wav2Vec2VAD
+from utils.lazy_model_manager import LazyModelManager
 
 # 添加日志过滤器，用于过滤健康检查和文档请求的日志
 class EndpointFilter(logging.Filter):
@@ -61,16 +63,29 @@ logger.addHandler(console_handler)
 # 应用日志过滤器
 logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
-"""并发模型：uvicorn N 个 worker + Torch 默认线程自动调度。
-不强制设置 Torch 线程数，不使用应用内线程池，尽量减少调度开销。
+"""并发模型：单进程 + 动态线程池 + 延迟加载模型。
+适用于低频高并发批量处理场景，空闲时释放内存。
 """
-# 获取系统 CPU 核心数（仅用于日志/初始化参考）
+# 获取系统 CPU 核心数
 cpu_count = os.cpu_count() or 1
 try:
     mp.set_start_method('spawn', force=True)
 except RuntimeError:
     # 可能已经设置过启动方法
     pass
+
+# 配置线程池
+MAX_WORKERS = int(os.getenv("MAX_CONCURRENT_REQUESTS", min(32, cpu_count * 2)))
+executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+logger.info(f"线程池配置: max_workers={MAX_WORKERS}, cpu_count={cpu_count}")
+
+# 配置并发限流
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_REQUESTS", min(32, cpu_count * 2)))
+semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+# 配置模型空闲超时（秒）
+MODEL_IDLE_TIMEOUT = int(os.getenv("MODEL_IDLE_TIMEOUT", 300))  # 默认 5 分钟
+ENABLE_AUTO_UNLOAD = os.getenv("ENABLE_AUTO_UNLOAD", "true").lower() == "true"
 
 # Pydantic 模型定义
 class ASRItem(BaseModel):
@@ -119,11 +134,10 @@ class Language(str, Enum):
     ko = "ko"
     nospeech = "nospeech"
 
-# 全局变量用于存储模型实例
-model = None
-model_kwargs = None
-vad_processor = None
-pri_model = None  # 用于 PRI 处理的 FunASR 模型
+# 全局变量用于存储模型管理器
+model_manager_asr = None
+model_manager_vad = None
+model_manager_pri = None
 
 # 超时中间件，处理长时间运行的请求
 class TimeoutMiddleware(BaseHTTPMiddleware):
@@ -151,39 +165,74 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
                 media_type="application/json"
             )
 
+# 模型加载函数（同步）
+def load_sensevoice_model():
+    """加载 SenseVoice ASR 模型"""
+    model_dir = "iic/SenseVoiceSmall"
+    device = os.getenv("SENSEVOICE_DEVICE", "cpu")
+    model, model_kwargs = SenseVoiceSmall.from_pretrained(model=model_dir, device=device)
+    model.eval()
+    return (model, model_kwargs)
+
+def load_vad_model():
+    """加载 VAD 模型"""
+    return Wav2Vec2VAD()
+
+def load_pri_model():
+    """加载 PRI 模型"""
+    device = os.getenv("SENSEVOICE_DEVICE", "cpu")
+    return AutoModel(model="paraformer-zh", device=device)
+
 # 使用 lifespan 上下文管理器
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 应用启动时执行
-    global model, model_kwargs, vad_processor, pri_model
+    global model_manager_asr, model_manager_vad, model_manager_pri
     
     try:
-        # 加载模型
-        model_dir = "iic/SenseVoiceSmall"
         pid = os.getpid()
-        logger.info(f"Worker {pid}: 正在加载模型...")
-        model, model_kwargs = SenseVoiceSmall.from_pretrained(
-            model=model_dir, device=os.getenv("SENSEVOICE_DEVICE", "cpu")
+        logger.info(f"Worker {pid}: 初始化模型管理器（延迟加载模式）")
+        logger.info(f"Worker {pid}: CPU 核心数: {cpu_count}, 最大并发: {MAX_CONCURRENT}")
+        logger.info(f"Worker {pid}: 模型空闲超时: {MODEL_IDLE_TIMEOUT}s, 自动卸载: {ENABLE_AUTO_UNLOAD}")
+        
+        # 创建模型管理器（不立即加载模型）
+        model_manager_asr = LazyModelManager(
+            name="SenseVoice-ASR",
+            load_func=load_sensevoice_model,
+            idle_timeout=MODEL_IDLE_TIMEOUT,
+            enable_auto_unload=False # ASR 太常用，禁用自动卸载
         )
-        model.eval()
         
-        # 初始化 VAD 处理器
-        vad_processor = Wav2Vec2VAD()
+        model_manager_vad = LazyModelManager(
+            name="Wav2Vec2-VAD",
+            load_func=load_vad_model,
+            idle_timeout=MODEL_IDLE_TIMEOUT,
+            enable_auto_unload=ENABLE_AUTO_UNLOAD
+        )
         
-        # 初始化 PRI 处理的 FunASR 模型，使用环境变量设置的 CPU 核心数
-        logger.info(f"Worker {pid}: 初始化 PRI 模型")
-        pri_model = AutoModel(model="paraformer-zh", device=os.getenv("SENSEVOICE_DEVICE", "cpu"))
+        model_manager_pri = LazyModelManager(
+            name="FunASR-PRI",
+            load_func=load_pri_model,
+            idle_timeout=MODEL_IDLE_TIMEOUT,
+            enable_auto_unload=ENABLE_AUTO_UNLOAD
+        )
         
-        logger.info(f"Worker {pid}: 模型加载成功")
-        logger.info(f"Worker {pid}: CPU 核心数: {cpu_count}")
+        logger.info(f"Worker {pid}: 模型管理器初始化完成（模型将在首次请求时加载）")
         
         yield  # 这里是应用运行期间
     except Exception as e:
-        logger.error(f"应用启动异常: {str(e)}\n{traceback.format_exc()}")
+        logger.exception(f"应用启动异常: {str(e)}")
         raise
     finally:
         # 应用关闭时执行的清理代码
         logger.info(f"Worker {pid}: 正在清理资源...")
+        if model_manager_asr:
+            await model_manager_asr.force_unload()
+        if model_manager_vad:
+            await model_manager_vad.force_unload()
+        if model_manager_pri:
+            await model_manager_pri.force_unload()
+        executor.shutdown(wait=True)
 
 app = FastAPI(lifespan=lifespan)
 # 添加超时中间件
@@ -194,7 +243,7 @@ app.add_middleware(TimeoutMiddleware)
 setup_cuda_health(
     app,
     path="/health",
-    ready_predicate=lambda: model is not None,
+    ready_predicate=lambda: True,  # 延迟加载模式下，服务始终就绪
 )
 
 regex = r"<\|.*\|>"
@@ -222,8 +271,10 @@ def process_audio(file_data):
         return None, 0
 
 
-def background_process_asr(file_data, key, lang):
+def background_process_asr(model_tuple, file_data, key, lang):
+    """ASR 处理函数（在线程池中执行）"""
     try:
+        model, model_kwargs = model_tuple
         audio, audio_fs = process_audio(file_data)
         if audio is None:
             return {"result": []}
@@ -251,7 +302,7 @@ def background_process_asr(file_data, key, lang):
         
         return {"result": res[0]}
     except Exception as e:
-        logger.error(f"ASR 处理时出错: {str(e)}\n{traceback.format_exc()}")
+        logger.exception(f"ASR 处理时出错: {str(e)}")
         raise HTTPException(status_code=500, detail=f"ASR 处理失败: {str(e)}")
 
 @app.post("/api/v1/asr", response_model=ASRResponse)
@@ -260,7 +311,7 @@ async def turn_audio_to_text(
     key: Annotated[str, Form(description="name of audio file")] = "wav_file_tmp_name",
     lang: Annotated[Language, Form(description="language of audio content")] = "auto",
 ) -> Dict[str, List[Dict[str, Any]]]:
-    global model, model_kwargs
+    global model_manager_asr
     
     if lang == "":
         lang = "auto"
@@ -271,14 +322,21 @@ async def turn_audio_to_text(
     start_time = time.time()
     
     try:
-        # 同步执行，最大化单请求推理速度；整体并发由多 worker 进程承载
-        result = background_process_asr(files, key, lang)
+        # 使用并发限流
+        async with semaphore:
+            # 获取模型（首次调用时加载）
+            model_tuple = await model_manager_asr.get_model()
+            
+            # 在线程池中执行推理
+            result = await asyncio.to_thread(
+                background_process_asr, model_tuple, files, key, lang
+            )
         
         process_time = time.time() - start_time
         logger.info(f"ASR 请求处理完成: key={key}, 耗时={process_time:.2f}秒")
         return result
     except Exception as e:
-        logger.error(f"ASR 处理异常: key={key}, 错误={str(e)}\n{traceback.format_exc()}")
+        logger.exception(f"ASR 处理异常: key={key}, 错误={str(e)}")
         raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
 
 # 使用 PyTorch JIT 优化音频重采样函数
@@ -301,7 +359,8 @@ def resample_audio(data: torch.Tensor, orig_sr: int, target_sr: int = 16000) -> 
     return data.view(-1)
 
 # VAD 处理函数，用于线程池
-def process_vad(file_data):
+def process_vad(vad_processor, file_data):
+    """VAD 处理函数（在线程池中执行）"""
     try:
         start_time = time.time()
         
@@ -316,28 +375,33 @@ def process_vad(file_data):
         # 转回 numpy 数组
         resampled_data = resampled_data.numpy()
         
-        # 使用全局 VAD 处理器
+        # 使用 VAD 处理器
         with torch.set_grad_enabled(False):  # 禁用梯度计算提高性能
             vad_data = vad_processor.process(resampled_data, raw=True)
         
         logger.debug(f"VAD 处理完成，耗时: {time.time() - start_time:.2f}秒")
         return vad_data
     except Exception as e:
-        logger.error(f"VAD 处理时出错: {str(e)}\n{traceback.format_exc()}")
+        logger.exception(f"VAD 处理时出错: {str(e)}")
         return None
 
 @app.post("/api/v1/vad", response_model=VADResponse)
 async def get_vad_from_file(
     file: Annotated[bytes, File(description="wav or mp3 audios")],
 ) -> Dict[str, Dict[str, Union[float, List[float]]]]:
-    global vad_processor
+    global model_manager_vad
     
     logger.debug(f"收到 VAD 请求: 文件大小={len(file)} 字节")
     start_time = time.time()
     
     try:
-        # 同步执行，最大化单请求速度
-        vad_data = process_vad(file)
+        # 使用并发限流
+        async with semaphore:
+            # 获取模型（首次调用时加载）
+            vad_processor = await model_manager_vad.get_model()
+            
+            # 在线程池中执行推理
+            vad_data = await asyncio.to_thread(process_vad, vad_processor, file)
         
         if vad_data is None:
             raise HTTPException(status_code=500, detail="VAD 处理失败")
@@ -346,7 +410,7 @@ async def get_vad_from_file(
         logger.info(f"VAD 请求处理完成: 大小={len(file)} 耗时={process_time:.2f}秒")
         
     except Exception as e:
-        logger.error(f"VAD 处理异常: 错误={str(e)}\n{traceback.format_exc()}")
+        logger.exception(f"VAD 处理异常: 错误={str(e)}")
         raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
 
     return {
@@ -359,18 +423,18 @@ async def get_vad_from_file(
     }
 
 # PRI 处理函数
-def process_pri(file_data):
+def process_pri(pri_model, file_data):
+    """PRI 处理函数（在线程池中执行）"""
     try:
         start_time = time.time()
         
-        global pri_model
         # 使用 with 语句确保资源正确释放
         with BytesIO(file_data) as file_io:
             audio, sr = sf.read(file_io)
         
         # 使用 torch.no_grad() 上下文管理器禁用梯度计算
         with torch.no_grad():
-            # 创建 PriFile 实例，传入全局初始化的模型
+            # 创建 PriFile 实例，传入模型
             pri_data = PriFile((audio, sr), model=pri_model)
         
         logger.debug(f"PRI 处理完成，大小={len(file_data)} 耗时: {time.time() - start_time:.2f}秒")
@@ -388,21 +452,26 @@ def process_pri(file_data):
             },
         }
     except Exception as e:
-        logger.error(f"PRI 处理时出错: {str(e)}\n{traceback.format_exc()}")
+        logger.exception(f"PRI 处理时出错: {str(e)}")
         return None
 
 @app.post("/api/v1/pri", response_model=PRIResponse)
 async def get_pri_from_file(
     file: Annotated[bytes, File(description="wav or mp3 audios")],
 ) -> Dict[str, Dict[str, Union[float, List[float]]]]:
-    global pri_model
+    global model_manager_pri
     
     logger.debug(f"收到 PRI 请求: 文件大小={len(file)} 字节")
     start_time = time.time()
     
     try:
-        # 同步执行，最大化单请求速度
-        pri_data = process_pri(file)
+        # 使用并发限流
+        async with semaphore:
+            # 获取模型（首次调用时加载）
+            pri_model = await model_manager_pri.get_model()
+            
+            # 在线程池中执行推理
+            pri_data = await asyncio.to_thread(process_pri, pri_model, file)
         
         if pri_data is None:
             raise HTTPException(status_code=500, detail="PRI 处理失败")
@@ -411,12 +480,109 @@ async def get_pri_from_file(
         logger.info(f"PRI 请求处理完成: 大小={len(file)} 耗时={process_time:.2f}秒")
         
     except Exception as e:
-        logger.error(f"PRI 处理异常: 错误={str(e)}\n{traceback.format_exc()}")
+        logger.exception(f"PRI 处理异常: 错误={str(e)}")
         raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
 
     return {
         "result": pri_data
     }
+
+# ========== 管理端点 ==========
+
+@app.post("/api/v1/warmup")
+async def warmup():
+    """
+    预热端点：提前加载所有模型
+    建议在批量任务开始前调用，避免首次请求的冷启动延迟
+    """
+    global model_manager_asr, model_manager_vad, model_manager_pri
+    
+    logger.info("🔥 开始预热所有模型...")
+    start_time = time.time()
+    
+    try:
+        # 并行加载所有模型
+        results = await asyncio.gather(
+            model_manager_asr.warmup(),
+            model_manager_vad.warmup(),
+            model_manager_pri.warmup(),
+            return_exceptions=True
+        )
+        
+        # 检查是否有加载失败
+        errors = [r for r in results if isinstance(r, Exception)]
+        if errors:
+            logger.error(f"❌ 预热失败: {errors}")
+            raise HTTPException(status_code=500, detail=f"模型预热失败: {errors[0]}")
+        
+        elapsed = time.time() - start_time
+        logger.info(f"✅ 所有模型预热完成 (耗时: {elapsed:.1f}s)")
+        
+        return {
+            "status": "ready",
+            "elapsed": elapsed,
+            "models": {
+                "asr": model_manager_asr.is_loaded(),
+                "vad": model_manager_vad.is_loaded(),
+                "pri": model_manager_pri.is_loaded(),
+            }
+        }
+    except Exception as e:
+        logger.exception(f"❌ 预热异常: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"预热失败: {str(e)}")
+
+
+@app.post("/api/v1/unload")
+async def force_unload():
+    """
+    强制卸载端点：立即卸载所有模型释放内存
+    """
+    global model_manager_asr, model_manager_vad, model_manager_pri
+    
+    logger.info("🗑️ 开始强制卸载所有模型...")
+    start_time = time.time()
+    
+    try:
+        await asyncio.gather(
+            model_manager_asr.force_unload(),
+            model_manager_vad.force_unload(),
+            model_manager_pri.force_unload(),
+        )
+        
+        elapsed = time.time() - start_time
+        logger.info(f"✅ 所有模型卸载完成 (耗时: {elapsed:.1f}s)")
+        
+        return {
+            "status": "unloaded",
+            "elapsed": elapsed,
+        }
+    except Exception as e:
+        logger.exception(f"❌ 卸载异常: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"卸载失败: {str(e)}")
+
+
+@app.get("/api/v1/status")
+async def get_status():
+    """
+    状态端点：查看模型加载状态和统计信息
+    """
+    global model_manager_asr, model_manager_vad, model_manager_pri
+    
+    return {
+        "models": {
+            "asr": model_manager_asr.get_stats() if model_manager_asr else None,
+            "vad": model_manager_vad.get_stats() if model_manager_vad else None,
+            "pri": model_manager_pri.get_stats() if model_manager_pri else None,
+        },
+        "config": {
+            "max_concurrent": MAX_CONCURRENT,
+            "max_workers": MAX_WORKERS,
+            "model_idle_timeout": MODEL_IDLE_TIMEOUT,
+            "auto_unload_enabled": ENABLE_AUTO_UNLOAD,
+            "cpu_count": cpu_count,
+        }
+    }
+
 
 # 将 Gradio 应用挂载到根路径，放在最后以确保 /api/* 等更具体路由优先生效
 # gr.mount_gradio_app(app, create_gradio_app(default_language="auto"), path="/")
