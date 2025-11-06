@@ -246,6 +246,11 @@ setup_cuda_health(
     ready_predicate=lambda: True,  # 延迟加载模式下，服务始终就绪
 )
 
+@app.get("/")
+async def root():
+    """API 根路径"""
+    return {"message": "欢迎使用 SenseVoice API 服务"}
+
 regex = r"<\|.*\|>"
 
 # 使用 PyTorch JIT 优化音频处理函数
