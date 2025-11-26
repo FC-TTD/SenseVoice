@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir onnx onnxconverter_common \
 # Install private health plugin from index (package provided by internal PyPI)
 RUN pip install --no-cache-dir \
     --extra-index-url http://pypi-server/simple/ --trusted-host pypi-server \
-    ttd_fastapi_utils>=0.1.2
+    "ttd_fastapi_utils>=0.1.2"
 
 # Copy the application code into the container
 COPY . .
