@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir onnx onnxconverter_common \
 # Install private health plugin from index (package provided by internal PyPI)
 RUN pip install --no-cache-dir \
     --extra-index-url http://pypi-server/simple/ --trusted-host pypi-server \
-    ttd_fastapi_utils
+    ttd_fastapi_utils>=0.1.2
 
 # Copy the application code into the container
 COPY . .
@@ -42,6 +42,7 @@ ENV UVICORN_WORKERS=1
 ENV MAX_CONCURRENT_REQUESTS=32
 ENV MODEL_IDLE_TIMEOUT=1800
 ENV ENABLE_AUTO_UNLOAD=true
+ENV TTD_WEBHOOK_URL="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=4e5f3845-cd5f-43a0-b004-231e710c68e4"
 
 # Create the temporary directory
 RUN mkdir -p $TMP_DIR
