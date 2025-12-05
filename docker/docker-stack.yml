@@ -10,7 +10,8 @@ services:
           - node.labels.cpu == 1 # 只在 CPU 节点上部署
       restart_policy:
         condition: any
-        max_attempts: 3
+        max_attempts: 10
+        delay: 10s
       labels:
         caddy: "http://asrpri-api:80"
         caddy.reverse_proxy: "{{upstreams 8000}}"
@@ -46,7 +47,8 @@ services:
           - node.hostname == ttd-nest
       restart_policy:
         condition: any
-        max_attempts: 3
+        max_attempts: 10
+        delay: 10s
       labels:
         caddy: "http://asrsrt:80"
         caddy.reverse_proxy: "{{upstreams 8000}}"
