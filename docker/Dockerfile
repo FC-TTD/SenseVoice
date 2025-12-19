@@ -21,18 +21,18 @@ RUN apt-get update \
 RUN pip install --no-cache-dir onnx onnxconverter_common \
       transformers==4.49.0 pyloudnorm scipy torch==2.3 \
       torchaudio==2.3.0 modelscope huggingface huggingface_hub funasr \
-      numpy==1.26.4 gradio
+      numpy==1.26.4 gradio==5.50.0 openai-whisper
 
 # Install private health plugin from index (package provided by internal PyPI)
 RUN pip install --no-cache-dir \
     --extra-index-url http://pypi-server/simple/ --trusted-host pypi-server \
-    "ttd_fastapi_utils>=0.1.2"
+    "ttd_fastapi_utils>=0.2.1"
 
 # Copy the application code into the container
 COPY . .
 
-  # Expose the port FastAPI will run on
-  EXPOSE 8000
+# Expose the port FastAPI will run on
+EXPOSE 8000
   
 # Define environment variables（单进程 + 动态线程池 + 延迟加载模型）
 ENV TMP_DIR=/app/tmp

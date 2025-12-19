@@ -29,11 +29,10 @@ import torchaudio
 from ttd_fastapi_utils import setup_cuda_health
 from typing_extensions import Annotated
 
-from asrsrt import create_gradio_app
 from model import SenseVoiceSmall
+from utils.lazy_model_manager import LazyModelManager
 from utils.pri import PriFile
 from utils.vec import Wav2Vec2VAD
-from utils.lazy_model_manager import LazyModelManager
 
 # 添加日志过滤器，用于过滤健康检查和文档请求的日志
 class EndpointFilter(logging.Filter):
@@ -246,10 +245,6 @@ setup_cuda_health(
     ready_predicate=lambda: True,  # 延迟加载模式下，服务始终就绪
 )
 
-@app.get("/")
-async def root():
-    """API 根路径"""
-    return {"message": "欢迎使用 SenseVoice API 服务"}
 
 regex = r"<\|.*\|>"
 
