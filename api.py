@@ -123,6 +123,9 @@ class PRIData(BaseModel):
 class PRIResponse(BaseModel):
     result: PRIData = Field(description="PRI 分析结果")
 
+TARGET_FS = 16000
+LONG_AUDIO_THRESHOLD_SECONDS = int(os.getenv("ASR_LONG_AUDIO_THRESHOLD_SECONDS", "120"))
+
 
 class Language(str, Enum):
     auto = "auto"
@@ -258,12 +261,29 @@ def preprocess_audio(audio_data: torch.Tensor) -> torch.Tensor:
 def process_audio(file_data):
     try:
         start_time = time.time()
-        
-        file_io = BytesIO(file_data)
-        data_or_path_or_list, fs = torchaudio.load(file_io)
+
+        with BytesIO(file_data) as file_io:
+            data_or_path_or_list, fs = torchaudio.load(file_io)
+
         # 使用 JIT 优化的预处理函数
-        data_or_path_or_list = preprocess_audio(data_or_path_or_list)
-        file_io.close()
+        data_or_path_or_list = preprocess_audio(data_or_path_or_list).to(torch.float32)
+        duration_seconds = (
+            float(data_or_path_or_list.numel()) / float(fs) if fs > 0 else 0.0
+        )
+
+        if fs != TARGET_FS:
+            if duration_seconds >= LONG_AUDIO_THRESHOLD_SECONDS:
+                logger.info(
+                    "长音频预处理降级: duration=%.2fs, sample_rate=%s -> %s",
+                    duration_seconds,
+                    fs,
+                    TARGET_FS,
+                )
+            else:
+                logger.info("音频重采样: sample_rate=%s -> %s", fs, TARGET_FS)
+            data_or_path_or_list = resample_audio(data_or_path_or_list, fs, TARGET_FS)
+            fs = TARGET_FS
+
         logger.debug(f"音频处理完成，耗时: {time.time() - start_time:.2f}秒")
         return data_or_path_or_list, fs
     except Exception as e:

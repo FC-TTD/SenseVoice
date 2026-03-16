@@ -9,10 +9,11 @@ WORKDIR /app
 # 设置环境变量，避免生成缓存文件
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
 
   # Install runtime utilities for healthcheck
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 #fix bug
