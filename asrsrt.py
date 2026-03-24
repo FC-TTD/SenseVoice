@@ -1,293 +1,216 @@
 # coding=utf-8
 
-
 import logging
-
 import os
+from pathlib import Path
+import subprocess
+import numpy as np
+import librosa
+import soundfile as sf
+from io import BytesIO
 
 import gradio as gr
-import librosa
-import numpy as np
-from funasr import AutoModel
-
-from utils.subtitle_utils import generate_srt
-
-# 全局缓存模型，避免重复加载
-_funasr_models = {}
-_whisper_models = {}
+import requests
 
 
-def _coerce_ms(value):
-    """将秒/毫秒时间统一为毫秒整数。"""
-    if value is None:
+logger = logging.getLogger("asrsrt")
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+
+
+API_BASE_URL = os.getenv("SENSEVOICE_API_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+ASD_ENDPOINT = f"{API_BASE_URL}/api/v1/asd"
+REQUEST_TIMEOUT = int(os.getenv("SENSEVOICE_API_TIMEOUT", "600"))
+TARGET_SAMPLE_RATE = 16000
+
+LANGUAGE_CHOICES = [
+    "auto",
+    "zh",
+    "en",
+    "yue",
+    "ja",
+    "ko",
+    "de",
+    "fr",
+    "es",
+    "ru",
+    "it",
+    "pt",
+    "tr",
+    "nl",
+    "pl",
+    "uk",
+    "vi",
+    "th",
+    "id",
+    "ms",
+    "hi",
+    "ar",
+    "fa",
+    "he",
+    "cs",
+    "sv",
+    "da",
+    "no",
+    "fi",
+    "hu",
+    "ro",
+]
+
+
+def _normalize_language(language: str):
+    normalized = (language or "auto").strip()
+    return normalized or "auto"
+
+
+def _normalize_model(model_type: str, language: str):
+    normalized_model = (model_type or "").strip().lower()
+    normalized_language = _normalize_language(language)
+    if normalized_language == "auto" and normalized_model not in {"paraformer", "whisperx"}:
         return None
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    # Whisper segments 常见为秒级浮点；FunASR timestamp 常见为毫秒整数。
-    if abs(numeric) < 1000:
-        numeric *= 1000
-    return int(round(numeric))
+    return normalized_model or None
 
 
-def _segments_to_sentence_info(segments):
-    sentence_info = []
-    for seg in segments or []:
-        if not isinstance(seg, dict):
-            continue
-        start = _coerce_ms(seg.get("start"))
-        end = _coerce_ms(seg.get("end"))
-        if start is None or end is None or end <= start:
-            continue
-        text = (seg.get("text") or "").strip()
-        if not text:
-            continue
-        sentence_info.append({
-            "text": text,
-            "timestamp": [[start, end]],
-        })
-    return sentence_info
+def _normalize_audio_array(sample_rate: int, audio_data):
+    audio_array = np.asarray(audio_data)
+    if audio_array.ndim == 0:
+        raise ValueError("音频数据为空")
 
+    if audio_array.ndim == 2:
+        if audio_array.shape[0] <= 8 and audio_array.shape[0] < audio_array.shape[1]:
+            audio_array = audio_array.mean(axis=0)
+        else:
+            audio_array = audio_array.mean(axis=1)
+    elif audio_array.ndim > 2:
+        raise ValueError(f"暂不支持当前音频维度: {audio_array.shape}")
 
-def _normalize_timestamp_list(timestamp):
-    normalized = []
-    for item in timestamp or []:
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
-            continue
-        start = _coerce_ms(item[0])
-        end = _coerce_ms(item[1])
-        if start is None or end is None or end <= start:
-            continue
-        normalized.append([start, end])
-    return normalized
-
-
-def _collect_whisper_output(rec_result, audio_duration_ms):
-    results = rec_result if isinstance(rec_result, list) else [rec_result]
-    sentence_info = []
-    texts = []
-
-    for res in results:
-        if not isinstance(res, dict):
-            continue
-
-        text = (res.get("text") or "").strip()
-        if text:
-            texts.append(text)
-
-        if isinstance(res.get("sentence_info"), list):
-            for sent in res["sentence_info"]:
-                if not isinstance(sent, dict):
-                    continue
-                sent_text = (sent.get("text") or sent.get("sentence") or "").strip()
-                timestamp = _normalize_timestamp_list(sent.get("timestamp"))
-                if sent_text and timestamp:
-                    sentence_info.append({"text": sent_text, "timestamp": timestamp})
-            continue
-
-        segments_sentence_info = _segments_to_sentence_info(res.get("segments"))
-        if segments_sentence_info:
-            sentence_info.extend(segments_sentence_info)
-            continue
-
-        timestamp = _normalize_timestamp_list(res.get("timestamp"))
-        if text and timestamp:
-            sentence_info.append({"text": text, "timestamp": timestamp})
-
-    full_text = "\n".join(texts).strip()
-    if not sentence_info and full_text:
-        sentence_info.append({
-            "text": full_text,
-            "timestamp": [[0, int(round(audio_duration_ms))]],
-        })
-    return sentence_info, full_text
-
-
-def _normalize_device(device: str):
-    if not device:
-        return "cpu"
-    device = device.lower()
-    if device.startswith("cuda"):
-        return "cuda"
-    return device
-
-
-def _load_whisper_model(language: str = "zh"):
-    lang_key = "en" if language == "en" else "zh"
-    device = _normalize_device(os.getenv("SENSEVOICE_DEVICE", "cpu"))
-    whisper_model_name = os.getenv("SENSEVOICE_WHISPER_MODEL", "turbo")
-    cache_key = f"whisper_{lang_key}_{device}_{whisper_model_name}"
-    if cache_key in _whisper_models:
-        return _whisper_models[cache_key]
-
-    logging.info("Loading official openai-whisper model=%s device=%s", whisper_model_name, device)
-    try:
-        import whisper
-    except Exception as e:
-        logging.error("Failed to import openai-whisper. Error: %s", e)
-        raise
-
-    model = whisper.load_model(whisper_model_name, device=device)
-    _whisper_models[cache_key] = model
-    return model
-
-
-def _load_paraformer_model(language: str = "zh"):
-    lang_key = "en" if language == "en" else "zh"
-    cache_key = f"paraformer_{lang_key}"
-    if cache_key in _funasr_models:
-        return _funasr_models[cache_key]
-
-    cpu_count = os.cpu_count() or 1
-    device = os.getenv("SENSEVOICE_DEVICE", "cpu")
-    if lang_key == "zh":
-        model = AutoModel(
-            model="iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-            vad_model="damo/speech_fsmn_vad_zh-cn-16k-common-pytorch",
-            punc_model="damo/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
-            spk_model="damo/speech_campplus_sv_zh-cn_16k-common",
-            device=device,
-            trust_remote_code=True,
-            ncpu=cpu_count,
-        )
+    if np.issubdtype(audio_array.dtype, np.integer):
+        dtype_info = np.iinfo(audio_array.dtype)
+        scale = max(abs(dtype_info.min), dtype_info.max)
+        audio_array = audio_array.astype(np.float32) / float(scale)
     else:
-        model = AutoModel(
-            model="iic/speech_paraformer_asr-en-16k-vocab4199-pytorch",
-            vad_model="damo/speech_fsmn_vad_zh-cn-16k-common-pytorch",
-            punc_model="damo/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
-            spk_model="damo/speech_campplus_sv_zh-cn_16k-common",
-            device=device,
-            trust_remote_code=True,
-            ncpu=cpu_count,
-        )
+        audio_array = audio_array.astype(np.float32)
 
-    _funasr_models[cache_key] = model
-    logging.info("FunASR model loaded with ncpu=%s language=%s type=paraformer", cpu_count, lang_key)
-    return model
+    if int(sample_rate) != TARGET_SAMPLE_RATE:
+        audio_array = librosa.resample(audio_array, orig_sr=int(sample_rate), target_sr=TARGET_SAMPLE_RATE)
+    return np.ascontiguousarray(audio_array, dtype=np.float32), TARGET_SAMPLE_RATE
 
 
-def load_model(language: str = "zh", model_type: str = "paraformer"):
-    """按语言懒加载模型。"""
-    if model_type == "whisper":
-        return _load_whisper_model(language)
-    return _load_paraformer_model(language)
+def _encode_wav_bytes(sample_rate: int, audio_data, filename: str):
+    audio_array, normalized_sr = _normalize_audio_array(sample_rate, audio_data)
+    buffer = BytesIO()
+    sf.write(buffer, audio_array, int(normalized_sr), format="WAV", subtype="PCM_16")
+    return buffer.getvalue(), filename
 
 
-def preload_models(langs):
-    """预加载指定语言的模型列表。仅在独立运行（launch）场景使用。"""
-    if not isinstance(langs, (list, tuple)):
-        langs = [langs]
-    loaded = []
-    for lg in langs:
-        try:
-            # 默认预加载 Paraformer，如果需要预加载 Whisper 可以扩展环境变量解析逻辑
-            m = load_model("en" if lg == "en" else "zh", model_type="paraformer")
-            loaded.append(lg)
-        except Exception as e:
-            logging.exception(f"Preload model failed for language={lg}: {e}")
-    if loaded:
-        logging.info(f"Preloaded UI models for languages: {','.join(loaded)}")
-
-
-def convert_pcm_to_float(data: np.ndarray):
-    """将常见 PCM 类型统一转换为 float64 [-1, 1] 区间。"""
-    if data.dtype == np.float64:
-        return data
-    if data.dtype == np.float32:
-        return data.astype(np.float64)
-    if data.dtype == np.int16:
-        return data.astype(np.float64) / 32768.0
-    if data.dtype == np.int32:
-        return data.astype(np.float64) / 2147483648.0
-    if data.dtype == np.int8:
-        # 8-bit PCM 通常是无符号 [0,255]，中心在 128
-        data = data.astype(np.float64) - 128.0
-        return data / 128.0
-    raise ValueError(f"Unsupported data type: {data.dtype}")
-
-
-def _prepare_audio(audio_data):
-    sr, data = audio_data
-
-    data = convert_pcm_to_float(data)
-
-    if data.ndim == 2:
-        try:
-            ch_axis = int(np.argmin(data.shape))
-            logging.warning("Input wav shape: %s, downmix along axis %d to mono.", str(data.shape), ch_axis)
-            data = data.mean(axis=ch_axis)
-        except Exception as e:
-            logging.exception("Downmix failed with shape %s: %s", str(data.shape), e)
-            if data.shape[-1] >= 1:
-                data = data[..., 0]
-            else:
-                raise
-
-    if sr != 16000:
-        logging.warning("Resampling from %d Hz to 16000 Hz", sr)
-        data = librosa.resample(data, orig_sr=sr, target_sr=16000)
-        sr = 16000
-
-    return sr, data
-
-
-def _resolve_whisper_language(language: str):
-    if language in {"auto", "nospeech", None}:
-        return None
-    return language
-
-
-def _infer_whisper(model, data: np.ndarray, sr: int, language: str):
-    device = _normalize_device(os.getenv("SENSEVOICE_DEVICE", "cpu"))
-    rec_result = model.transcribe(
-        data.astype(np.float32),
-        task="transcribe",
-        language=_resolve_whisper_language(language),
-        fp16=device == "cuda",
-        word_timestamps=False,
-        verbose=False,
+def _ffmpeg_decode_to_wav_bytes(path: Path):
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-i",
+            path.as_posix(),
+            "-ac",
+            "1",
+            "-ar",
+            str(TARGET_SAMPLE_RATE),
+            "-f",
+            "wav",
+            "pipe:1",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
     )
+    if result.returncode != 0 or not result.stdout:
+        error_text = result.stderr.decode("utf-8", errors="ignore").strip()
+        raise RuntimeError(error_text or "ffmpeg decode failed")
+    return result.stdout, path.name
 
-    audio_duration_ms = len(data) / sr * 1000
-    sentence_info, full_text = _collect_whisper_output(rec_result, audio_duration_ms)
-    logging.info(
-        "Whisper parsed result: segments=%d, sentence_info=%d",
-        len(rec_result.get("segments", [])) if isinstance(rec_result, dict) else 0,
-        len(sentence_info),
+
+def _read_audio_path_bytes(path_value):
+    path = Path(path_value)
+    if not path.exists():
+        raise ValueError(f"音频临时文件不存在: {path}")
+    try:
+        return _ffmpeg_decode_to_wav_bytes(path)
+    except Exception as exc:
+        logger.warning("ffmpeg 解码失败，回退 librosa: path=%s error=%s", path, exc)
+        audio_data, sample_rate = librosa.load(path.as_posix(), sr=TARGET_SAMPLE_RATE, mono=True)
+        return _encode_wav_bytes(sample_rate, audio_data, path.name)
+
+
+def _read_audio_bytes(audio_input):
+    if audio_input is None:
+        raise ValueError("请先上传音频")
+
+    if isinstance(audio_input, str):
+        return _read_audio_path_bytes(audio_input)
+
+    if isinstance(audio_input, (tuple, list)) and len(audio_input) == 2:
+        sample_rate, audio_data = audio_input
+        return _encode_wav_bytes(sample_rate, audio_data, "audio.wav")
+
+    if isinstance(audio_input, dict):
+        path = audio_input.get("path")
+        if path:
+            return _read_audio_path_bytes(path)
+        if "sample_rate" in audio_input and "data" in audio_input:
+            return _encode_wav_bytes(audio_input.get("sample_rate"), audio_input.get("data"), "audio.wav")
+
+    raise ValueError("暂不支持当前音频输入格式，请重新上传文件")
+
+
+def infer(audio_input, language, model_type="paraformer", diarize=None):
+    del diarize
+
+    audio_bytes, default_key = _read_audio_bytes(audio_input)
+    normalized_language = _normalize_language(language)
+    normalized_model = _normalize_model(model_type, normalized_language)
+
+    data = {
+        "key": default_key,
+        "lang": normalized_language,
+    }
+    if normalized_model:
+        data["model"] = normalized_model
+
+    files = {
+        "files": (default_key, audio_bytes, "audio/wav"),
+    }
+
+    logger.info(
+        "Forward ASD request to API: endpoint=%s, language=%s, model=%s, key=%s",
+        ASD_ENDPOINT,
+        normalized_language,
+        normalized_model,
+        default_key,
     )
-    return generate_srt(sentence_info), full_text
+    response = requests.post(ASD_ENDPOINT, data=data, files=files, timeout=REQUEST_TIMEOUT)
+    try:
+        payload = response.json()
+    except ValueError as e:
+        logger.exception("ASD API returned non-JSON response")
+        raise RuntimeError(f"ASD API 返回了非 JSON 响应: {response.text[:300]}") from e
 
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"ASD API 返回格式错误: {payload}")
 
-def infer(audio_data, language, model_type="paraformer"):
-    sr, data = _prepare_audio(audio_data)
+    if not response.ok or payload.get("code") not in {0, None}:
+        detail = payload.get("message") or payload.get("detail") or payload
+        raise RuntimeError(f"ASD API 调用失败: HTTP {response.status_code} - {detail}")
 
-    logging.info(f"Input audio ready. length: {len(data) / sr:.2f} seconds. Model: {model_type}")
-
-    m = load_model("en" if language == "en" else "zh", model_type=model_type)
-    
-    if model_type == "whisper":
-        try:
-            return _infer_whisper(m, data, sr, language)
-        except Exception as e:
-            logging.exception(f"Whisper inference failed: {e}")
-            raise
-            
-    else:
-        # Paraformer 推理逻辑
-        rec_result = m.generate(
-            data,
-            return_spk_res=True,
-            return_raw_text=True,
-            is_final=True,
-            pred_timestamp=language == "en",
-            en_post_proc=language == "en",
-            cache={},
-        )
-
-        res_srt = generate_srt(rec_result[0]["sentence_info"])
-        asr_result = rec_result[0]["text"]
-        return res_srt, asr_result
+    data_payload = payload.get("data") or {}
+    result_payload = data_payload.get("result") or {}
+    result_items = result_payload.get("segments") or []
+    text = result_payload.get("text") or "\n".join(
+        item.get("text", "") for item in result_items if item.get("text")
+    ).strip()
+    return result_payload.get("srt", ""), text
 
 
 def create_gradio_app(default_language: str = "auto") -> gr.Blocks:
@@ -295,26 +218,23 @@ def create_gradio_app(default_language: str = "auto") -> gr.Blocks:
     with gr.Blocks(theme=gr.themes.Soft()) as demo:
         with gr.Row():
             with gr.Column():
-                audio_inputs = gr.Audio(label="上传音频或使用麦克风")
+                audio_inputs = gr.Audio(label="上传音频或使用麦克风", type="numpy")
             with gr.Column():
                 with gr.Accordion("配置"):
                     model_type_input = gr.Dropdown(
-                        choices=["paraformer", "whisper"],
+                        choices=["paraformer", "whisperx"],
                         value="paraformer",
-                        label="模型类型 (Paraformer: 速度快/中文强; Whisper: 多语言强)"
+                        label="模型类型（由 API 实际执行）",
                     )
                     language_inputs = gr.Dropdown(
-                        choices=[
-                            "auto",
-                            "zh",
-                            "en",
-                            "yue",
-                            "ja",
-                            "ko",
-                            "nospeech",
-                        ],
+                        choices=LANGUAGE_CHOICES,
                         value=default_language,
-                        label="识别语言（Paraformer主要支持中英，Whisper支持更多）",
+                        allow_custom_value=True,
+                        label="识别语言（可自由输入语言代码；中文走 Paraformer，其他语言通常走 WhisperX；auto 需指定模型）",
+                    )
+                    diarize_input = gr.Checkbox(
+                        value=True,
+                        label="识别说话人（由 API 侧配置决定，这里仅保留界面兼容）",
                     )
                 fn_button = gr.Button("开始识别", variant="primary")
         with gr.Row():
@@ -323,16 +243,16 @@ def create_gradio_app(default_language: str = "auto") -> gr.Blocks:
 
         fn_button.click(
             infer,
-            inputs=[audio_inputs, language_inputs, model_type_input],
+            inputs=[audio_inputs, language_inputs, model_type_input, diarize_input],
             outputs=[srt_outputs, asr_outputs],
         )
 
     return demo
+
+
 def launch():
-    """独立运行时：预加载模型后启动本地 Gradio 服务。"""
-    preload = os.getenv("SENSEVOICE_UI_PRELOAD_LANGS", "zh")
-    langs = [x.strip() for x in preload.split(",") if x.strip()]
-    preload_models(langs)
+    """独立运行时：仅启动薄客户端 Gradio 服务。"""
+    logger.info("Launch asrsrt thin client, forwarding to %s", ASD_ENDPOINT)
     demo = create_gradio_app()
     demo.launch(server_name="0.0.0.0", server_port=8000, share=False)
 

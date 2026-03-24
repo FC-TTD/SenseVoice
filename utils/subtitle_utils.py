@@ -58,7 +58,9 @@ def generate_srt(sentence_list):
     srt_total = ''
     for i, sent in enumerate(sentence_list):
         t2s = Text2SRT(sent['text'], sent['timestamp'])
-        if 'spk' in sent:
+        if 'speaker' in sent:
+            srt_total += "{}  {}\n{}".format(i + 1, sent['speaker'], t2s.srt())
+        elif 'spk' in sent:
             srt_total += "{}  spk{}\n{}".format(i + 1, sent['spk'], t2s.srt())
         else:
             srt_total += "{}\n{}\n".format(i + 1, t2s.srt())

@@ -34,6 +34,16 @@ services:
       - MAX_CONCURRENT_REQUESTS=32
       - MODEL_IDLE_TIMEOUT=1800
       - ENABLE_AUTO_UNLOAD=true
+      - SENSEVOICE_WHISPERX_MODEL=small
+      - SENSEVOICE_WHISPERX_VAD_METHOD=pyannote
+      - SENSEVOICE_WHISPERX_ALIGN=true
+      - SENSEVOICE_WHISPERX_DIARIZE=true
+      - SENSEVOICE_WHISPERX_BATCH_SIZE=8
+      - SENSEVOICE_WHISPERX_THREADS=32
+      - SENSEVOICE_WHISPERX_HF_TOKEN_FILE=/run/secrets/hf_token
+    secrets:
+      - source: hf_token
+        target: hf_token
     networks:
       - caddy
 
@@ -56,10 +66,11 @@ services:
       - cache:/root/.cache
     environment:
       - TMP_DIR=/app/tmp
-      - SENSEVOICE_DEVICE=cpu #cuda:0
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=INFO
       - UVICORN_LOG_LEVEL=info
+      - SENSEVOICE_API_BASE_URL=http://api:8000
+      - SENSEVOICE_API_TIMEOUT=600
     command: ["python", "asrsrt.py"]
     networks:
       - caddy
@@ -70,3 +81,7 @@ networks:
 
 volumes:
   cache:
+
+secrets:
+  hf_token:
+    external: true

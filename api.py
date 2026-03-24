@@ -12,7 +12,7 @@ import re
 import sys
 import time
 import traceback
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import FastAPI, File, Form, HTTPException
 from funasr import AutoModel
@@ -22,14 +22,19 @@ from pydantic import BaseModel, Field
 import soundfile as sf
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 import torch
 import torch.multiprocessing as mp
 import torchaudio
 from ttd_fastapi_utils import setup_cuda_health
 from typing_extensions import Annotated
+from uuid import uuid4
 
 from model import SenseVoiceSmall
+from utils.asd_service import clear_model_cache as clear_asd_model_cache
+from utils.asd_service import get_model_cache_stats as get_asd_model_cache_stats
+from utils.asd_service import infer as asd_infer
+from utils.asd_service import load_model as load_asd_model
 from utils.lazy_model_manager import LazyModelManager
 from utils.pri import PriFile
 from utils.vec import Wav2Vec2VAD
@@ -96,6 +101,60 @@ class ASRItem(BaseModel):
 class ASRResponse(BaseModel):
     result: List[ASRItem] = Field(description="ASR 识别结果列表")
 
+class ASDRequestMeta(BaseModel):
+    request_id: str = Field(description="请求唯一标识")
+    key: str = Field(description="音频文件名")
+    requested_language: str = Field(description="请求传入的语言参数")
+    resolved_language: str = Field(description="实际执行时使用的语言参数")
+    requested_model: Optional[str] = Field(default=None, description="请求传入的模型参数")
+    resolved_model: str = Field(description="实际执行时使用的模型类型")
+
+class ASDAudioMeta(BaseModel):
+    sample_rate: int = Field(description="音频采样率")
+    duration_seconds: float = Field(description="音频时长（秒）")
+    size_bytes: int = Field(description="上传音频字节大小")
+
+class ASDTimingMeta(BaseModel):
+    processing_ms: int = Field(description="处理耗时（毫秒）")
+
+class ASDSegmentItem(BaseModel):
+    start: int = Field(description="分段起始时间（毫秒）")
+    end: int = Field(description="分段结束时间（毫秒）")
+    text: str = Field(description="处理后的文本")
+    raw_text: str = Field(description="原始文本")
+    clean_text: str = Field(description="清理后的文本")
+    speaker: Optional[str] = Field(default=None, description="说话人标识")
+    key: str = Field(description="音频文件名")
+
+class ASDResultData(BaseModel):
+    segments: List[ASDSegmentItem] = Field(description="结构化识别结果列表")
+    text: str = Field(description="最终展示文本")
+    raw_text: str = Field(description="原始文本")
+    clean_text: str = Field(description="清洗后的文本")
+    srt: str = Field(description="字幕结果")
+
+class ASDData(BaseModel):
+    request: ASDRequestMeta = Field(description="请求与路由信息")
+    audio: ASDAudioMeta = Field(description="音频元信息")
+    timing: ASDTimingMeta = Field(description="耗时信息")
+    result: ASDResultData = Field(description="识别结果")
+
+class ASDEnvelope(BaseModel):
+    code: int = Field(description="业务状态码，0 表示成功")
+    message: str = Field(description="响应消息")
+    data: Optional[ASDData] = Field(default=None, description="响应数据")
+
+
+def _asd_error_response(status_code: int, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "code": status_code,
+            "message": message,
+            "data": None,
+        },
+    )
+
 class VADData(BaseModel):
     v: float = Field(description="Valence 值", default=0)
     a: float = Field(description="Arousal 值", default=0)
@@ -126,7 +185,6 @@ class PRIResponse(BaseModel):
 TARGET_FS = 16000
 LONG_AUDIO_THRESHOLD_SECONDS = int(os.getenv("ASR_LONG_AUDIO_THRESHOLD_SECONDS", "120"))
 
-
 class Language(str, Enum):
     auto = "auto"
     zh = "zh"
@@ -153,19 +211,15 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
         except asyncio.TimeoutError:
             # 请求超时，返回 503 Service Unavailable
             logger.error(f"请求处理超时: {request.url.path}")
-            return Response(
-                content={"detail": "请求处理超时"}.json(),
-                status_code=503,
-                media_type="application/json"
-            )
+            if request.url.path == "/api/v1/asd":
+                return _asd_error_response(503, "请求处理超时")
+            return JSONResponse(status_code=503, content={"detail": "请求处理超时"})
         except Exception as e:
             # 其他异常，记录错误并返回 500 Internal Server Error
             logger.error(f"请求处理异常: {str(e)}\n{traceback.format_exc()}")
-            return Response(
-                content={"detail": "服务器内部错误"}.json(),
-                status_code=500,
-                media_type="application/json"
-            )
+            if request.url.path == "/api/v1/asd":
+                return _asd_error_response(500, "服务器内部错误")
+            return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
 
 # 模型加载函数（同步）
 def load_sensevoice_model():
@@ -184,6 +238,101 @@ def load_pri_model():
     """加载 PRI 模型"""
     device = os.getenv("SENSEVOICE_DEVICE", "cpu")
     return AutoModel(model="paraformer-zh", device=device)
+
+def _normalize_asd_language(language):
+    if isinstance(language, Language):
+        return language.value
+    if language is None:
+        return "auto"
+    return str(language).strip() or "auto"
+
+def _resolve_asd_model(language, model):
+    normalized_language = _normalize_asd_language(language)
+    normalized_model = (model or "").strip().lower()
+
+    if normalized_language in {"", "auto"}:
+        if normalized_model not in {"paraformer", "whisperx"}:
+            raise HTTPException(
+                status_code=422,
+                detail="当 language 为 auto 或未传时，必须显式指定 model=paraformer 或 model=whisperx",
+            )
+        return normalized_model, "zh" if normalized_model == "paraformer" else "auto"
+
+    if normalized_language == "zh":
+        return "paraformer", "zh"
+
+    return "whisperx", normalized_language
+
+def process_asd(file_data, key, language, model):
+    """ASD 处理函数：按语言路由到 paraformer 或 whisperx。"""
+    try:
+        start_time = time.time()
+        request_id = uuid4().hex
+        requested_language = _normalize_asd_language(language)
+        requested_model = (model or "").strip().lower() or None
+        backend, effective_language = _resolve_asd_model(language, model)
+
+        with BytesIO(file_data) as file_io:
+            audio, sr = sf.read(file_io)
+
+        srt_text, full_text, segments = asd_infer(
+            (sr, audio),
+            effective_language,
+            model_type=backend,
+            return_segments=True,
+        )
+
+        cleaned_text = re.sub(regex, "", full_text, 0, re.MULTILINE)
+        normalized_segments = []
+        for item in segments or []:
+            if not isinstance(item, dict):
+                continue
+            segment = dict(item)
+            segment["key"] = key
+            normalized_segments.append(segment)
+
+        logger.info(
+            "ASD 处理完成: key=%s, language=%s, model=%s, segments=%s, 耗时=%.2f秒",
+            key,
+            effective_language,
+            backend,
+            len(normalized_segments),
+            time.time() - start_time,
+        )
+        return {
+            "code": 0,
+            "message": "识别成功",
+            "data": {
+                "request": {
+                    "request_id": request_id,
+                    "key": key,
+                    "requested_language": requested_language,
+                    "resolved_language": effective_language,
+                    "requested_model": requested_model,
+                    "resolved_model": backend,
+                },
+                "audio": {
+                    "sample_rate": sr,
+                    "duration_seconds": len(audio) / sr,
+                    "size_bytes": len(file_data),
+                },
+                "timing": {
+                    "processing_ms": int((time.time() - start_time) * 1000),
+                },
+                "result": {
+                    "segments": normalized_segments,
+                    "text": full_text,
+                    "raw_text": full_text,
+                    "clean_text": cleaned_text,
+                    "srt": srt_text,
+                },
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"ASD 处理时出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"ASD 处理失败: {str(e)}")
 
 # 使用 lifespan 上下文管理器
 @asynccontextmanager
@@ -248,7 +397,6 @@ setup_cuda_health(
     ready_predicate=lambda: True,  # 延迟加载模式下，服务始终就绪
 )
 
-
 regex = r"<\|.*\|>"
 
 # 使用 PyTorch JIT 优化音频处理函数
@@ -289,7 +437,6 @@ def process_audio(file_data):
     except Exception as e:
         logger.error(f"处理音频文件时出错: {str(e)}\n{traceback.format_exc()}")
         return None, 0
-
 
 def background_process_asr(model_tuple, file_data, key, lang):
     """ASR 处理函数（在线程池中执行）"""
@@ -358,6 +505,50 @@ async def turn_audio_to_text(
     except Exception as e:
         logger.exception(f"ASR 处理异常: key={key}, 错误={str(e)}")
         raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
+
+
+@app.post("/api/v1/asd", response_model=ASDEnvelope)
+async def turn_audio_to_speaker(
+    files: Annotated[bytes, File(description="wav or mp3 audio in 16KHz")],
+    key: Annotated[str, Form(description="name of audio file")] = "wav_file_tmp_name",
+    lang: Annotated[str, Form(description="language of audio content")] = "auto",
+    model: Annotated[str | None, Form(description="model backend: paraformer or whisperx")] = None,
+) -> Dict[str, Any]:
+    global semaphore
+
+    if lang == "":
+        lang = "auto"
+    if key == "":
+        key = "wav_file_tmp_name"
+
+    logger.debug(
+        "收到 ASD 请求: key=%s, lang=%s, model=%s, 文件大小=%s 字节",
+        key,
+        lang,
+        model,
+        len(files),
+    )
+    start_time = time.time()
+
+    try:
+        async with semaphore:
+            result = await asyncio.to_thread(
+                process_asd,
+                files,
+                key,
+                lang,
+                model,
+            )
+
+        process_time = time.time() - start_time
+        logger.info(f"ASD 请求处理完成: key={key}, 耗时={process_time:.2f}秒")
+        return result
+    except HTTPException as e:
+        logger.exception(f"ASD 处理异常: key={key}, 错误={str(e.detail)}")
+        return _asd_error_response(e.status_code, str(e.detail))
+    except Exception as e:
+        logger.exception(f"ASD 处理异常: key={key}, 错误={str(e)}")
+        return _asd_error_response(500, f"处理请求失败: {str(e)}")
 
 # 使用 PyTorch JIT 优化音频重采样函数
 @torch.jit.script
@@ -526,6 +717,8 @@ async def warmup():
             model_manager_asr.warmup(),
             model_manager_vad.warmup(),
             model_manager_pri.warmup(),
+            asyncio.to_thread(load_asd_model, "zh", model_type="paraformer"),
+            asyncio.to_thread(load_asd_model, "en", model_type="whisperx"),
             return_exceptions=True
         )
         
@@ -545,6 +738,7 @@ async def warmup():
                 "asr": model_manager_asr.is_loaded(),
                 "vad": model_manager_vad.is_loaded(),
                 "pri": model_manager_pri.is_loaded(),
+                "asd": bool(get_asd_model_cache_stats()["paraformer"] or get_asd_model_cache_stats()["whisperx"]),
             }
         }
     except Exception as e:
@@ -568,6 +762,7 @@ async def force_unload():
             model_manager_vad.force_unload(),
             model_manager_pri.force_unload(),
         )
+        clear_asd_model_cache()
         
         elapsed = time.time() - start_time
         logger.info(f"✅ 所有模型卸载完成 (耗时: {elapsed:.1f}s)")
@@ -593,6 +788,7 @@ async def get_status():
             "asr": model_manager_asr.get_stats() if model_manager_asr else None,
             "vad": model_manager_vad.get_stats() if model_manager_vad else None,
             "pri": model_manager_pri.get_stats() if model_manager_pri else None,
+            "asd": get_asd_model_cache_stats(),
         },
         "config": {
             "max_concurrent": MAX_CONCURRENT,
@@ -602,7 +798,6 @@ async def get_status():
             "cpu_count": cpu_count,
         }
     }
-
 
 # 将 Gradio 应用挂载到根路径，放在最后以确保 /api/* 等更具体路由优先生效
 # gr.mount_gradio_app(app, create_gradio_app(default_language="auto"), path="/")
