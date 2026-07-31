@@ -41,7 +41,7 @@
 
   roles:
     # 使用Docker CI/CD角色
-    - role: /workspace/z/ansible/roles/docker_ci_cd
+    - role: docker_ci_cd
       vars:
         # CI相关变量
         ci_project_name: "{{ project_name }}"
@@ -50,6 +50,7 @@
         ci_registry_url: "{{ registry_url }}"
         ci_image_name: "{{ image_name }}"
         ci_image_tag: "{{ image_tag }}"
+        ci_identity_provider: "probe"
         ci_compose_file_path: "{{ compose_file }}"
         ci_build_host: "{{ build_host }}"
         ci_rsync_opts: "{{ rsync_opts }}"
