@@ -43,3 +43,4 @@ endfunction()
 
 funasr_add(llama-funasr-sensevoice funasr-sensevoice/funasr-sensevoice.cpp ggml)
 funasr_add(llama-funasr-vad funasr-vad/funasr-vad.cpp ggml)
+funasr_add(sensevoice-server sensevoice-server/sensevoice-server.cpp ggml)

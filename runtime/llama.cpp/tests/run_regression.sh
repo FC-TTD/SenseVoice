@@ -48,5 +48,10 @@ B=$(bin llama-funasr-sensevoice) && run_tool sensevoice llama-funasr-sensevoice 
 B=$(bin llama-funasr-paraformer) && run_tool paraformer llama-funasr-paraformer paraformer.txt paraformer paraformer-f16.gguf -- "$B" -m "$MODELS/paraformer-f16.gguf" -a "$SAMPLE"
 B=$(bin llama-funasr-cli)        && run_tool nano       llama-funasr-cli        nano.txt       nano       funasr-encoder-f16.gguf qwen3-0.6b-q8_0.gguf -- "$B" --enc "$MODELS/funasr-encoder-f16.gguf" -m "$MODELS/qwen3-0.6b-q8_0.gguf" -a "$SAMPLE"
 
+# End-to-end sensevoice_server smoke (REST + realtime WebSocket), guarded by binary+model presence.
+if [ -x "$BIN/sensevoice_server" ] && [ -f "$MODELS/fsmn-vad.gguf" ]; then
+  "$DIR/run_server_smoke.sh" || { echo "  FAIL  server-smoke"; fail=$((fail+1)); }
+fi
+
 echo "== $pass passed, $fail failed, $skip skipped =="
 [ "$fail" = 0 ]
