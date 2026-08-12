@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal OpenAI-realtime-style WebSocket STT client for sensevoice_server.
+"""Minimal OpenAI-realtime-style WebSocket STT client for sensevoice-server.
 
 Zero-dependency RFC6455 client over stdlib socket. Uses a dedicated reader
 thread so the socket stream can never desync while the server computes slow

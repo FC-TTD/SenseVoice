@@ -1,0 +1,41 @@
+name: llama.cpp runtime
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/llama-cpp-runtime.yml"
+      - "runtime/llama.cpp/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/llama-cpp-runtime.yml"
+      - "runtime/llama.cpp/**"
+
+concurrency:
+  group: llama-cpp-runtime-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Configure
+        run: cmake -S runtime/llama.cpp -B build/llama-cpp -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/llama-cpp --parallel 2
+
+      - name: Unit tests
+        run: ctest --test-dir build/llama-cpp --output-on-failure
+
+      - name: Server contract
+        env:
+          BIN_DIR: ${{ github.workspace }}/build/llama-cpp/bin
+        run: runtime/llama.cpp/tests/run_server_contract.sh

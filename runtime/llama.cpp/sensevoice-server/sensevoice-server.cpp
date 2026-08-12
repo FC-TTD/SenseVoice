@@ -1,6 +1,6 @@
 // sensevoice-server — OpenAI-compatible STT server for SenseVoiceSmall on ggml.
 //
-//   sensevoice_server -m model/sensevoice-small-q8.gguf -vad model/fsmn-vad.gguf [host] [port]
+//   sensevoice-server -m model/sensevoice-small-q8.gguf -vad model/fsmn-vad.gguf [host] [port]
 //
 // Endpoints
 //   POST /v1/audio/transcriptions           OpenAI file-transcription API (multipart form-data)
@@ -26,6 +26,7 @@
 #include "funasr_audio.h"
 #include "funasr_vad.h"
 #include "httplib.h"
+#include "server_utils.h"
 
 #include <algorithm>
 #include <atomic>
@@ -47,96 +48,16 @@
 
 static const float LN_EPS = 1e-5f;
 
+using funasr_server::base64_decode;
+using funasr_server::format_subtitles;
+using funasr_server::format_verbose_segments;
+using funasr_server::json_field;
+using funasr_server::json_str;
+using funasr_server::TranscriptSegment;
+
 static long long now_ms(){
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
-// ===========================================================================
-// Minimal JSON helpers + base64 (no external JSON library)
-// ===========================================================================
-static std::string json_escape(const std::string& s){
-    std::string o; o.reserve(s.size()+8);
-    for (unsigned char c : s){
-        switch(c){
-            case '"':  o += "\\\""; break;
-            case '\\': o += "\\\\"; break;
-            case '\n': o += "\\n"; break;
-            case '\r': o += "\\r"; break;
-            case '\t': o += "\\t"; break;
-            default:
-                if (c < 0x20){ char b[8]; snprintf(b,sizeof b,"\\u%04x",c); o += b; }
-                else o += (char)c;
-        }
-    }
-    return o;
-}
-static std::string json_str(const std::string& s){ return "\"" + json_escape(s) + "\""; }
-
-static size_t json_skipw(const std::string& s, size_t i){
-    while(i<s.size() && (s[i]==' '||s[i]=='\t'||s[i]=='\n'||s[i]=='\r')) i++;
-    return i;
-}
-// Read the JSON value of a field named `key` from `s` (single level).
-static std::string json_field(const std::string& s, const std::string& key){
-    std::string pat = "\"" + key + "\"";
-    size_t pos = s.find(pat);
-    if(pos==std::string::npos) return "";
-    size_t c = s.find(':', pos+pat.size());
-    if(c==std::string::npos) return "";
-    c = json_skipw(s, c+1);
-    if(s[c]=='"'){
-        std::string out; c++;
-        while(c<s.size()){
-            char ch=s[c];
-            if(ch=='\\' && c+1<s.size()){
-                char n=s[c+1];
-                switch(n){
-                    case 'n':out+='\n';break; case 't':out+='\t';break; case 'r':out+='\r';break;
-                    case '"':out+='"';break; case '\\':out+='\\';break; case '/':out+='/';break;
-                    case 'u':{ unsigned v=0; for(int k=0;k<4&&c+2+k<s.size();k++){ char h=s[c+2+k]; v=v*16+(h<='9'?h-'0':(h|32)-'a'+10); } c+=4;
-                        if(v<0x80)out+=(char)v; else if(v<0x800){out+=(char)(0xC0|(v>>6));out+=(char)(0x80|(v&0x3F));}
-                        else {out+=(char)(0xE0|(v>>12));out+=(char)(0x80|((v>>6)&0x3F));out+=(char)(0x80|(v&0x3F));} break; }
-                    default: out+=n;
-                }
-                c+=2; continue;
-            }
-            if(ch=='"') break;
-            out+=ch; c++;
-        }
-        return out;
-    }
-    if(s[c]=='{'||s[c]=='['){
-        int depth=0; size_t j=c;
-        for(; j<s.size(); j++){
-            char ch=s[j];
-            if(ch=='"'){ j++; while(j<s.size()&&s[j]!='"'){ if(s[j]=='\\')j++; j++; } }
-            else if(ch=='{'||ch=='[') depth++;
-            else if(ch=='}'||ch==']'){ depth--; if(depth==0){ j++; break; } }
-        }
-        return s.substr(c, j>c? j-c : 0);
-    }
-    size_t j=c; while(j<s.size() && s[j]!=',' && s[j]!='}' && s[j]!=']') j++;
-    return s.substr(c, j-c);
-}
-static bool json_contains(const std::string& s, const std::string& key){
-    return json_field(s,key)!="" || (s.find("\""+key+"\"")!=std::string::npos);
-}
-
-static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-static bool base64_decode(const std::string& in, std::string& out){
-    static signed char RB[256] = {0};
-    static bool rb_init = false;
-    if(!rb_init){ for(int i=0;i<256;i++)RB[i]=-1; for(int i=0;i<64;i++)RB[(unsigned char)B64[i]]=(signed char)i; rb_init=true; }
-    out.clear(); out.reserve(in.size()*3/4);
-    unsigned buf=0; int bits=0;
-    for(unsigned char c : in){
-        if(c=='=' || c=='\r' || c=='\n' || c==' ') continue;
-        if(RB[c] < 0) return false;
-        buf = (buf<<6) | (unsigned)RB[c]; bits += 6;
-        if(bits >= 8){ bits -= 8; out += (char)((buf>>bits)&0xFF); }
-    }
-    return true;
 }
 
 // ===========================================================================
@@ -382,18 +303,20 @@ struct SenseVoice {
 // ---------------------------------------------------------------------------
 // Audio decode from memory (uploads) — miniaudio compiled in this TU.
 // ---------------------------------------------------------------------------
-static bool decode_audio_mem(const void* data, size_t len, std::vector<float>& out){
-    if(!data||!len) return false;
+enum class AudioDecodeResult { Ok, Invalid, TooLarge };
+static AudioDecodeResult decode_audio_mem(const void* data, size_t len, size_t max_samples, std::vector<float>& out){
+    if(!data||!len) return AudioDecodeResult::Invalid;
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 1, 16000);
     ma_decoder dec;
-    if(ma_decoder_init_memory(data, len, &cfg, &dec)!=MA_SUCCESS){fprintf(stderr,"audio: failed to decode upload\n");return false;}
+    if(ma_decoder_init_memory(data, len, &cfg, &dec)!=MA_SUCCESS){fprintf(stderr,"audio: failed to decode upload\n");return AudioDecodeResult::Invalid;}
     out.clear();
     ma_uint64 nframes = 0;
     if(ma_decoder_get_length_in_pcm_frames(&dec,&nframes)==MA_SUCCESS && nframes>0){
+        if(nframes>max_samples){ ma_decoder_uninit(&dec); return AudioDecodeResult::TooLarge; }
         out.resize((size_t)nframes);
         ma_uint64 got=0;
         ma_result r=ma_decoder_read_pcm_frames(&dec,out.data(),nframes,&got);
-        if(r!=MA_SUCCESS && r!=MA_AT_END){ma_decoder_uninit(&dec);return false;}
+        if(r!=MA_SUCCESS && r!=MA_AT_END){ma_decoder_uninit(&dec);return AudioDecodeResult::Invalid;}
         out.resize((size_t)got);
     } else {
         std::vector<float> buf(16000);
@@ -402,12 +325,17 @@ static bool decode_audio_mem(const void* data, size_t len, std::vector<float>& o
             ma_result r=ma_decoder_read_pcm_frames(&dec,buf.data(),buf.size(),&got);
             if(r!=MA_SUCCESS && r!=MA_AT_END){ out.clear(); break; }
             if(got==0) break;
+            if(got>max_samples || out.size()>max_samples-(size_t)got){
+                ma_decoder_uninit(&dec);
+                out.clear();
+                return AudioDecodeResult::TooLarge;
+            }
             out.insert(out.end(),buf.begin(),buf.begin()+got);
             if(r==MA_AT_END && got<buf.size()) break;
         }
     }
     ma_decoder_uninit(&dec);
-    return !out.empty();
+    return out.empty() ? AudioDecodeResult::Invalid : AudioDecodeResult::Ok;
 }
 
 // ===========================================================================
@@ -666,6 +594,7 @@ struct ServerCtx {
     SenseVoice sv;
     std::string vad_path;
     int nthreads=8, partial_ms=400, vad_maxseg=30000, vad_slot_ms=2000;
+    size_t max_session_samples=(size_t)FS*300;
     bool keep_tags=false;
     std::atomic<int> connections{0};
 
@@ -673,8 +602,9 @@ struct ServerCtx {
         std::string text;
         std::vector<std::string> tags;
         std::string language;
-        std::vector<std::pair<int,int>> segs;   // [start_ms,end_ms]
+        std::vector<TranscriptSegment> segs;
         double audio_ms = 0;
+        bool vad_failed = false;
     };
 
     TranscriptResult transcribe_file(const std::vector<float>& wav){
@@ -682,16 +612,21 @@ struct ServerCtx {
         out.audio_ms = (double)wav.size()/16.0;
         if(!vad_path.empty()){
             std::vector<std::pair<int,int>> s;
-            if(funasr_vad_segments(vad_path,wav,vad_maxseg,s)) out.segs = s;
-            else { fprintf(stderr,"[rest] VAD failed\n"); }
+            if(!funasr_vad_segments(vad_path,wav,vad_maxseg,s)){
+                fprintf(stderr,"[rest] VAD failed\n");
+                out.vad_failed = true;
+                return out;
+            }
+            for(auto&sg:s) out.segs.push_back({sg.first,sg.second,""});
         } else {
-            if(!wav.empty()) out.segs.push_back({0,(int)(wav.size()/16)});
+            if(!wav.empty()) out.segs.push_back({0,(int)(wav.size()/16),""});
         }
         for(auto&sg:out.segs){
-            int off=(int)((int64_t)sg.first*16), end=(int)((int64_t)sg.second*16);
+            int off=(int)((int64_t)sg.start_ms*16), end=(int)((int64_t)sg.end_ms*16);
             if(end>(int)wav.size())end=(int)wav.size(); if(end-off<WINLEN)continue;
             std::vector<float> seg(wav.begin()+off,wav.begin()+end);
             auto r=sv.transcribe_wav(seg,keep_tags);
+            sg.text=r.text;
             if(!out.text.empty() && !r.text.empty()) out.text+=" ";
             out.text+=r.text;
             for(auto&t:r.tags) out.tags.push_back(t);
@@ -715,7 +650,15 @@ public:
         for(;;){
             auto r = ws.read(msg);
             if(r==httplib::ws::ReadResult::Fail) break;   // close / error
-            if(r==httplib::ws::ReadResult::Binary){ append_raw_pcm16(msg); pump(ws); continue; }
+            if(r==httplib::ws::ReadResult::Binary){
+                if(!append_raw_pcm16(msg)){
+                    send(ws, ev("error", "\"message\":\"session audio limit exceeded\""));
+                    clear();
+                    ws.close(httplib::ws::CloseStatus::MessageTooBig, "session audio limit exceeded");
+                    break;
+                }
+                pump(ws); continue;
+            }
             std::string type = json_field(msg,"type");
             if(type=="session.update")        on_session_update(msg);
             else if(type=="input_audio_buffer.append"){ on_append(ws, msg); }
@@ -759,13 +702,19 @@ private:
         if(b64.empty()) return;
         std::string raw;
         if(!base64_decode(b64, raw) || raw.empty()){ fprintf(stderr,"[ws] bad base64\n"); return; }
-        append_raw_pcm16(raw);
+        if(!append_raw_pcm16(raw)){
+            send(ws, ev("error", "\"message\":\"session audio limit exceeded\""));
+            clear();
+            ws.close(httplib::ws::CloseStatus::MessageTooBig, "session audio limit exceeded");
+            return;
+        }
         pump(ws);
     }
 
-    void append_raw_pcm16(const std::string& raw){
+    bool append_raw_pcm16(const std::string& raw){
         size_t n = raw.size()/2;
-        if(n==0) return;
+        if(n==0) return true;
+        if(n>ctx_.max_session_samples || samples_.size()>ctx_.max_session_samples-n) return false;
         size_t off = samples_.size();
         samples_.resize(off+n);
         for(size_t i=0;i<n;i++){
@@ -778,6 +727,7 @@ private:
         double e=0;
         for(size_t i=0;i<n;i++) e += (double)samples_[off+i]*samples_[off+i];
         if(sqrt(e/(double)n) >= QUIET_RMS) last_activity_ms_ = now_ms();
+        return true;
     }
 
     void ensure_vad(){
@@ -920,19 +870,10 @@ private:
     }
 };
 
-// Per-connection task queue keeps long-lived WebSockets off the fixed thread pool.
-class PerThreadTaskQueue : public httplib::TaskQueue {
-public:
-    bool enqueue(std::function<void()> fn) override {
-        try { std::thread(std::move(fn)).detach(); return true; } catch(...) { return false; }
-    }
-    void shutdown() override {}
-};
-
 static void usage(const char* a0){
     fprintf(stderr,
 "\n"
-"sensevoice_server - OpenAI-compatible STT server (SenseVoiceSmall on ggml)\n"
+"sensevoice-server - OpenAI-compatible STT server (SenseVoiceSmall on ggml)\n"
 "\n"
 "Usage:\n"
 "  %s -m <sensevoice.gguf> [-vad <fsmn-vad.gguf>] [host [port]]\n"
@@ -951,7 +892,8 @@ static void usage(const char* a0){
       "                         in (default 2000; idle sessions stop burning CPU)\n"
 "      --read-timeout-s <N> socket read timeout, s (default 300)\n"
 "      --web <dir>        serve a static directory at / (mic webui; open http://host:port/)\n"
-"      --max-conn        allow many concurrent WebSocket clients (default 1)\n"
+"      --max-connections <N> maximum active WebSocket clients (default 4)\n"
+"      --max-audio-seconds <N> maximum decoded REST audio or buffered WS audio (default 300)\n"
 "  -h, --help             show this help\n"
 "\n"
 "Positional:\n"
@@ -969,6 +911,7 @@ static void usage(const char* a0){
 int main(int argc, char** argv){
     std::string model_path, vad_path, webdir, host="127.0.0.1";
     int port=8040, threads=8, partial_ms=400, vad_maxseg=30000, vad_slot_ms=2000, read_timeout_s=300;
+    int max_connections=4, max_audio_seconds=300;
     int ngl=0;
     bool keep_tags=false;
     std::vector<std::string> pos;
@@ -986,20 +929,25 @@ int main(int argc, char** argv){
         else if(a=="--vad-maxseg") vad_maxseg=atoi(take("--vad-maxseg"));
         else if(a=="--vad-slot-ms") vad_slot_ms=atoi(take("--vad-slot-ms"));
         else if(a=="--read-timeout-s") read_timeout_s=atoi(take("--read-timeout-s"));
+        else if(a=="--max-connections"||a=="--max-conn") max_connections=atoi(take(a.c_str()));
+        else if(a=="--max-audio-seconds") max_audio_seconds=atoi(take("--max-audio-seconds"));
         else if(a=="--keep-tags") keep_tags=true;
         else if(!a.empty() && a[0]=='-'){ fprintf(stderr,"unknown option %s\n",a.c_str()); return 1; }
         else pos.push_back(a);
     }
-    if(model_path.empty()){ usage(argv[0]); return 1; }
     if(pos.size()>0) host=pos[0];
     if(pos.size()>1) port=atoi(pos[1].c_str());
     if(threads<1) threads=1;
     if(partial_ms<50) partial_ms=50;
     if(vad_slot_ms<50) vad_slot_ms=50;
+    if(max_connections<1 || max_connections>128){ fprintf(stderr,"--max-connections must be between 1 and 128\n"); return 1; }
+    if(max_audio_seconds<1 || max_audio_seconds>3600){ fprintf(stderr,"--max-audio-seconds must be between 1 and 3600\n"); return 1; }
+    if(model_path.empty()){ usage(argv[0]); return 1; }
 
     ServerCtx ctx;
     ctx.nthreads=threads; ctx.partial_ms=partial_ms; ctx.vad_maxseg=vad_maxseg;
     ctx.vad_slot_ms=vad_slot_ms;
+    ctx.max_session_samples=(size_t)FS*(size_t)max_audio_seconds;
     ctx.keep_tags=keep_tags; ctx.vad_path=vad_path;
 
     fprintf(stderr,"[server] loading %s ...\n",model_path.c_str());
@@ -1012,8 +960,13 @@ int main(int argc, char** argv){
             vad_path.empty()?"":", vad enabled");
 
     httplib::Server svr;
-    svr.new_task_queue = [](){ return static_cast<httplib::TaskQueue*>(new PerThreadTaskQueue()); };
-    svr.set_payload_max_length((size_t)512*1024*1024);
+    // Keep two HTTP workers available while long-lived WebSockets occupy the
+    // dynamically sized remainder. The queue and thread count are bounded.
+    svr.new_task_queue = [max_connections](){
+        return static_cast<httplib::TaskQueue*>(new httplib::ThreadPool(
+            2, (size_t)max_connections+2, (size_t)max_connections+16));
+    };
+    svr.set_payload_max_length((size_t)64*1024*1024);
     svr.set_read_timeout(read_timeout_s, 0);
     svr.set_write_timeout(read_timeout_s, 0);
     svr.set_keep_alive_max_count(8);
@@ -1035,18 +988,36 @@ int main(int argc, char** argv){
         auto f = req.form.get_file("file");
         std::string fmt = req.form.has_field("response_format") ? req.form.get_field("response_format") : "json";
         bool stream = req.form.has_field("stream") && req.form.get_field("stream")=="true";
+        if(fmt!="json" && fmt!="text" && fmt!="verbose_json" && fmt!="srt" && fmt!="vtt"){
+            res.status=400;
+            res.set_content("{\"error\":{\"message\":\"unsupported response_format\",\"type\":\"invalid_request_error\"}}","application/json");
+            return;
+        }
         std::vector<float> wav;
-        if(!decode_audio_mem(f.content.data(), f.content.size(), wav)){
+        auto decode_result=decode_audio_mem(f.content.data(), f.content.size(), ctx.max_session_samples, wav);
+        if(decode_result==AudioDecodeResult::TooLarge){
+            res.status=413;
+            res.set_content("{\"error\":{\"message\":\"audio duration exceeds configured limit\",\"type\":\"invalid_request_error\"}}","application/json");
+            return;
+        }
+        if(decode_result!=AudioDecodeResult::Ok){
             res.status=400;
             res.set_content("{\"error\":{\"message\":\"cannot decode audio\",\"type\":\"invalid_request_error\"}}","application/json");
             return;
         }
         fprintf(stderr,"[rest] transcribe %s (%.1fs, %s)\n", f.filename.c_str(), (double)wav.size()/16000.0, fmt.c_str());
         auto tr = ctx.transcribe_file(wav);
+        if(tr.vad_failed){
+            res.status=500;
+            res.set_content("{\"error\":{\"message\":\"VAD inference failed\",\"type\":\"server_error\"}}","application/json");
+            return;
+        }
         if(stream){
-            // SSE: transcript.text.delta per segment, then transcript.text.done with full text.
+            // SSE: one transcript.text.delta per recognized segment, then the full text.
             std::vector<std::string> evs;
-            evs.push_back("event: transcript.text.delta\ndata: {\"type\":\"transcript.text.delta\",\"delta\":"+json_str(tr.text)+"}\n\n");
+            for(const auto& segment : tr.segs){
+                if(!segment.text.empty()) evs.push_back("event: transcript.text.delta\ndata: {\"type\":\"transcript.text.delta\",\"delta\":"+json_str(segment.text)+"}\n\n");
+            }
             evs.push_back("event: transcript.text.done\ndata: {\"type\":\"transcript.text.done\",\"text\":"+json_str(tr.text)+"}\n\n");
             size_t idx=0;
             res.set_chunked_content_provider("text/event-stream", [evs,idx](size_t, httplib::DataSink& sink) mutable -> bool {
@@ -1061,55 +1032,34 @@ int main(int argc, char** argv){
         std::string body; std::string ct="application/json";
         if(fmt=="text"){ body=tr.text; ct="text/plain"; }
         else if(fmt=="verbose_json"){
-            std::string segs;
-            int id=0;
-            for(auto&sg:tr.segs){
-                if(!segs.empty()) segs+=",";
-                std::string stext;
-                int off=(int)((int64_t)sg.first*16), end=(int)((int64_t)sg.second*16);
-                if(end>(int)wav.size())end=(int)wav.size();
-                if(end-off>=WINLEN){
-                    std::vector<float> seg(wav.begin()+off,wav.begin()+end);
-                    stext = ctx.sv.transcribe_wav(seg,ctx.keep_tags).text;
-                }
-                char b[512];
-                snprintf(b,sizeof b,
-                    "{\"id\":%d,\"start\":%.2f,\"end\":%.2f,\"start_ms\":%d,\"end_ms\":%d,\"text\":%s}",
-                    id++, sg.first/1000.0, sg.second/1000.0, sg.first, sg.second, json_str(stext).c_str());
-                segs+=b;
-            }
+            std::string segs=format_verbose_segments(tr.segs);
             body = "{\"task\":\"transcribe\",\"language\":"+json_str(tr.language)+",\"duration\":"+
                    std::to_string(tr.audio_ms/1000.0)+",\"text\":"+json_str(tr.text)+",\"segments\":["+segs+"]}";
             ct="application/json";
         }
         else if(fmt=="srt" || fmt=="vtt"){
-            std::string ts; int id=0;
-            auto fmt_ts=[&](int ms){
-                int h=ms/3600000, m=(ms/60000)%60, s=(ms/1000)%60, mi=ms%1000;
-                char b[64]; snprintf(b,sizeof b,"%02d:%02d:%02d,%03d",h,m,s,mi); return std::string(b);
-            };
-            if(fmt=="vtt"){ ts="WEBVTT\n\n"; }
-            for(auto&sg:tr.segs){
-                int off=(int)((int64_t)sg.first*16), end=(int)((int64_t)sg.second*16);
-                if(end>(int)wav.size())end=(int)wav.size();
-                if(end-off<WINLEN) continue;
-                std::vector<float> seg(wav.begin()+off,wav.begin()+end);
-                std::string txt=ctx.sv.transcribe_wav(seg,ctx.keep_tags).text;
-                if(fmt=="vtt") ts += fmt_ts(sg.first)+" --> "+fmt_ts(sg.second)+"\n"+txt+"\n\n";
-                else ts += std::to_string(id++)+"\n"+fmt_ts(sg.first)+" --> "+fmt_ts(sg.second)+"\n"+txt+"\n\n";
-            }
-            body=ts; ct = fmt=="srt"?"application/x-subrip":"text/vtt";
+            body=format_subtitles(tr.segs,fmt=="vtt");
+            ct = fmt=="srt"?"application/x-subrip":"text/vtt";
         }
         else { body = "{\"text\":"+json_str(tr.text)+"}"; }
         res.set_content(body, ct);
     });
 
     svr.WebSocket("/v1/realtime", [&](const httplib::Request&, httplib::ws::WebSocket& ws){
-        ctx.connections++;
-        fprintf(stderr,"[ws] client connected (%d active)\n", (int)ctx.connections.load());
+        int active=ctx.connections.fetch_add(1)+1;
+        if(active>max_connections){
+            ctx.connections--;
+            ws.send("{\"type\":\"error\",\"message\":\"connection limit exceeded\"}");
+            ws.close(httplib::ws::CloseStatus::PolicyViolation, "connection limit exceeded");
+            return;
+        }
+        struct ConnectionGuard {
+            std::atomic<int>& count;
+            ~ConnectionGuard(){ count--; }
+        } guard{ctx.connections};
+        fprintf(stderr,"[ws] client connected (%d/%d active)\n", active, max_connections);
         WsSession sess(ctx);
         sess.run(ws);
-        ctx.connections--;
         fprintf(stderr,"[ws] client disconnected\n");
     });
 

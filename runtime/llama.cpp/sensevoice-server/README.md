@@ -1,4 +1,4 @@
-# sensevoice_server — OpenAI-compatible STT server (SenseVoiceSmall on ggml)
+# sensevoice-server — OpenAI-compatible STT server (SenseVoiceSmall on ggml)
 
 Streaming + file transcription over HTTP, backed by the **SenseVoiceSmall** ggml
 runtime with built-in **FSMN-VAD**. One self-contained C++ binary, CPU-only, no
@@ -16,7 +16,7 @@ Provides two OpenAI-compatible surfaces:
 ## Running it
 
 ```bash
-sensevoice_server -m model/sensevoice-small-q8.gguf -vad model/fsmn-vad.gguf [host [port]]
+sensevoice-server -m model/sensevoice-small-q8.gguf -vad model/fsmn-vad.gguf [host [port]]
 ```
 
 - `-m, --model`    SenseVoice GGUF (required)
@@ -34,6 +34,10 @@ sensevoice_server -m model/sensevoice-small-q8.gguf -vad model/fsmn-vad.gguf [ho
   Prevents a connected-but-idle session (mic live, nobody talking) from keeping the
   VAD busy re-scoring quiet chunks.
 - `--read-timeout-s <N>` socket read timeout, s (default 300)
+- `--max-connections <N>` maximum active WebSocket clients (default 4;
+  accepted range 1 to 128)
+- `--max-audio-seconds <N>` maximum decoded audio per REST request and maximum
+  buffered audio per WebSocket session (default 300; accepted range 1 to 3600)
 - `--web <dir>`      serve the directory at `/` (mic webui; open `http://host:port/`)
 - positional `host` (default `127.0.0.1`) and `port` (default `8040`)
 
@@ -49,7 +53,7 @@ Same build as the CLI tools (fetches pinned llama.cpp; static, self-contained):
 
 ```bash
 cd runtime/llama.cpp
-cmake -B build -DCMAKE_BUILD_TYPE=Release     # -> build/bin/sensevoice_server
+cmake -B build -DCMAKE_BUILD_TYPE=Release     # -> build/bin/sensevoice-server
 cmake --build build -j
 ```
 
@@ -88,7 +92,7 @@ A zero-build browser UI (`webui/index.html`) streams the microphone to the
 realtime endpoint and renders dictation live:
 
 ```bash
-sensevoice_server -m model/sensevoice-small-q8.gguf -vad model/fsmn-vad.gguf \
+sensevoice-server -m model/sensevoice-small-q8.gguf -vad model/fsmn-vad.gguf \
     --web runtime/llama.cpp/sensevoice-server/webui
 # open http://127.0.0.1:8040/
 ```
@@ -148,8 +152,8 @@ python3 runtime/llama.cpp/tests/stream_client.py 127.0.0.1 8040 audio_16k.wav 20
   a faithful copy of the `funasr_vad.h` / E2EVadModel state machine — segment
   boundaries match the whole-file VAD tool (e.g. `770 5980` on `sample.wav`).
 - Transport is vendored cpp-httplib (WebSocket, multipart, SSE/`DataSink`).
-  Long-lived WebSockets run on their own detached thread per connection
-  (`PerThreadTaskQueue`), not the fixed pool.
+  Long-lived WebSockets use a bounded thread pool. `--max-connections` caps
+  active WebSocket sessions while two workers remain available for HTTP.
 - REST uploads are decoded to 16k mono by miniaudio (any sample rate / channel
   count / bit depth).
 
