@@ -474,10 +474,10 @@ You can also scan the following DingTalk group QR code to join the community gro
 |:--------------------------------------------------------:|
 | <img src="image/dingding_funasr.png" width="250"/></div> |
 
-<a href="https://star-history.dera.page/#QwenAudio/SenseVoice&modelscope/FunASR&FunAudioLLM/Fun-ASR&Date">
+<a href="https://star-history.dera.page/#QwenAudio/SenseVoice&modelscope/FunASR&QwenAudio/Fun-ASR&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=QwenAudio/SenseVoice,modelscope/FunASR,FunAudioLLM/Fun-ASR&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=QwenAudio/SenseVoice,modelscope/FunASR,FunAudioLLM/Fun-ASR&type=Date" />
-    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=QwenAudio/SenseVoice,modelscope/FunASR,FunAudioLLM/Fun-ASR&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=QwenAudio/SenseVoice,modelscope/FunASR,QwenAudio/Fun-ASR&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=QwenAudio/SenseVoice,modelscope/FunASR,QwenAudio/Fun-ASR&type=Date" />
+    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=QwenAudio/SenseVoice,modelscope/FunASR,QwenAudio/Fun-ASR&type=Date" />
   </picture>
 </a>
