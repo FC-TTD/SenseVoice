@@ -38,6 +38,7 @@ from utils.asd_service import load_model as load_asd_model
 from utils.lazy_model_manager import LazyModelManager
 from utils.pri import PriFile
 from utils.vec import Wav2Vec2VAD
+from utils.device_env import resolve_sensevoice_device
 
 # 添加日志过滤器，用于过滤健康检查和文档请求的日志
 class EndpointFilter(logging.Filter):
@@ -225,7 +226,7 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
 def load_sensevoice_model():
     """加载 SenseVoice ASR 模型"""
     model_dir = "iic/SenseVoiceSmall"
-    device = os.getenv("SENSEVOICE_DEVICE", "cpu")
+    device = resolve_sensevoice_device()
     model, model_kwargs = SenseVoiceSmall.from_pretrained(model=model_dir, device=device)
     model.eval()
     return (model, model_kwargs)
