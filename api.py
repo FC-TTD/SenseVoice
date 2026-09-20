@@ -226,7 +226,7 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
 def load_sensevoice_model():
     """加载 SenseVoice ASR 模型"""
     model_dir = "iic/SenseVoiceSmall"
-    device = resolve_sensevoice_device()
+    device = resolve_sensevoice_device(os.getenv("SENSEVOICE_DEVICE", "cpu"))
     model, model_kwargs = SenseVoiceSmall.from_pretrained(model=model_dir, device=device)
     model.eval()
     return (model, model_kwargs)

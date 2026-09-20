@@ -92,7 +92,7 @@ class ContainerContractTest(unittest.TestCase):
         self.assertNotIn("gpus:", compose)
 
     def test_api_uses_resolved_device_not_raw_auto(self):
-        api = (ROOT / "api.py").read_text(encoding="utf-8")
+        api = (ROOT / "upstream_api.py").read_text(encoding="utf-8")
 
         self.assertIn("resolve_sensevoice_device()", api)
         self.assertNotIn(

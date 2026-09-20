@@ -522,3 +522,7 @@ You can also scan the following DingTalk group QR code to join the community gro
     <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=QwenAudio/SenseVoice,modelscope/FunASR,QwenAudio/Fun-ASR&type=Date" />
   </picture>
 </a>
+
+## TTD API branch entrypoints
+
+The upstream container (`Dockerfile`, `docker-compose.yaml`) serves `upstream_api:app` on port 50000. The TTD deployment (`docker/Dockerfile`, `docker/docker-stack.yml`) continues to serve `api:app` on port 8000 with lazy loading, ASD/WhisperX, PRI and VAD routes. TTD defaults to CPU when `SENSEVOICE_DEVICE` is unset; explicit `auto` resolves according to CUDA availability. The upstream container does not install the TTD private runtime dependencies.

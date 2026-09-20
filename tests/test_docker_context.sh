@@ -21,7 +21,7 @@ test ! -e "$output/.git"
 for excluded in .git .ssh .aws .env .env.test .netrc .pypirc github_token hf_token; do
     test ! -e "$output/$probe/$excluded"
 done
-for required in api.py model.py requirements.txt utils/device_env.py "$probe/runtime-sentinel.txt"; do
+for required in api.py upstream_api.py model.py requirements.txt utils/device_env.py "$probe/runtime-sentinel.txt"; do
     test -f "$output/$required"
 done
 printf '%s\n' 'Docker context exclusions and runtime inputs verified.'

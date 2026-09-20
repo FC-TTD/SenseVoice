@@ -8,6 +8,7 @@ on:
       - docker-compose.yaml
       - requirements.txt
       - api.py
+      - upstream_api.py
       - model.py
       - utils/device_env.py
       - README.md
@@ -31,6 +32,7 @@ on:
       - docker-compose.yaml
       - requirements.txt
       - api.py
+      - upstream_api.py
       - model.py
       - utils/device_env.py
       - README.md
