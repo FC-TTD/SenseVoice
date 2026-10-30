@@ -18,14 +18,6 @@ class ContainerContractTest(unittest.TestCase):
         self.assertTrue(required <= patterns, required - patterns)
         self.assertFalse(any(pattern.startswith('!') for pattern in patterns))
 
-    def test_context_changes_run_ci_without_persisting_checkout_credentials(self):
-        workflow = (ROOT / '.github/workflows/sensevoice-container.yml').read_text()
-        self.assertEqual(workflow.count('- .dockerignore'), 2)
-        self.assertEqual(workflow.count('persist-credentials: false'),
-                         workflow.count('uses: actions/checkout@v4'))
-        self.assertEqual(workflow.count('- tests/test_docker_context.sh'), 2)
-        self.assertIn('run: bash tests/test_docker_context.sh', workflow)
-
     def test_container_base_matches_repository_torch_floor(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
@@ -44,20 +36,6 @@ class ContainerContractTest(unittest.TestCase):
         )
         self.assertIn("ENV PATH=/opt/sensevoice-venv/bin:$PATH", dockerfile)
         self.assertNotIn("--break-system-packages", dockerfile)
-
-    def test_container_workflow_builds_prs_and_only_pushes_trusted_refs(self):
-        workflow = (
-            ROOT / ".github" / "workflows" / "sensevoice-container.yml"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("pull_request:", workflow)
-        self.assertIn("packages: write", workflow)
-        self.assertIn("platforms: linux/amd64", workflow)
-        self.assertIn("push: ${{ github.event_name != 'pull_request' }}", workflow)
-        self.assertIn(
-            "ghcr.io/${{ github.repository_owner }}/sensevoice",
-            workflow,
-        )
 
     def test_readme_uses_real_service_port_and_no_retired_registry(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

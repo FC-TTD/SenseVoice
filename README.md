@@ -526,3 +526,7 @@ You can also scan the following DingTalk group QR code to join the community gro
 ## TTD API branch entrypoints
 
 The upstream container (`Dockerfile`, `docker-compose.yaml`) serves `upstream_api:app` on port 50000. The TTD deployment (`docker/Dockerfile`, `docker/docker-stack.yml`) continues to serve `api:app` on port 8000 with lazy loading, ASD/WhisperX, PRI and VAD routes. TTD defaults to CPU when `SENSEVOICE_DEVICE` is unset; explicit `auto` resolves according to CUDA availability. The upstream container does not install the TTD private runtime dependencies.
+
+The TTD fork does not run the upstream GHCR/container or llama.cpp build workflows. Run Python regression checks explicitly with `python -m pytest tests` in a dependency-equipped checkout, and run `bash tests/test_docker_context.sh` on a Docker build host. The Git-link tests require Git metadata; model tests require PyTorch/NumPy. GPU coverage and the optional llama.cpp server need their own environments.
+
+The root `requirements.txt` belongs to the upstream install. The CPU deployment installs its separate dependency set in `docker/Dockerfile`; changing one does not upgrade the other. Before production rollout, build and verify an immutable TTD image, retain the current image/configuration for rollback, and exercise the API and UI. The legacy deployment defaults (`latest`) are not an immutable release selection.
