@@ -3,7 +3,17 @@ version: "3.8"
 services:
   api:
     image: registry:5000/sensevoice/asrpri:latest
+    stop_grace_period: 660s
     deploy:
+      update_config:
+        parallelism: 1
+        order: start-first
+        monitor: 60s
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        order: start-first
+        monitor: 60s
       mode: global
       placement:
         constraints:
@@ -49,7 +59,17 @@ services:
 
   app:
     image: registry:5000/sensevoice/asrpri:latest
+    stop_grace_period: 660s
     deploy:
+      update_config:
+        parallelism: 1
+        order: start-first
+        monitor: 60s
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        order: start-first
+        monitor: 60s
       mode: replicated
       replicas: 1
       placement:
