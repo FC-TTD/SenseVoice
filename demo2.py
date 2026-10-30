@@ -32,6 +32,10 @@ res = m.inference(
 )
 
 timestamp = res[0][0]["timestamp"]
+words = res[0][0]["words"]
 text = rich_transcription_postprocess(res[0][0]["text"])
 print(text)
-print(timestamp)
+if len(words) != len(timestamp):
+    raise ValueError("Words and timestamps must have equal lengths")
+for word, (start_ms, end_ms) in zip(words, timestamp):
+    print(f"{start_ms}-{end_ms} ms: {word}")

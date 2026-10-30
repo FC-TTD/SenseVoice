@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SenseVoice · Realtime Transcription</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --edge:#262b36; --text:#e6e9f0;
+          --dim:#8b93a3; --accent:#4f9cff; --ok:#37d67a; --warn:#ffb454; --bad:#ff5c5c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; }
+  header { display:flex; align-items:center; gap:14px; padding:12px 18px;
+           background:var(--panel); border-bottom:1px solid var(--edge); flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; font-weight:600; }
+  h1 small { color:var(--dim); font-weight:400; }
+  .badge { padding:2px 10px; border-radius:999px; font-size:12px; border:1px solid var(--edge);
+           background:#10131a; color:var(--dim); }
+  .badge.on  { color:#08110b; background:var(--ok); border-color:var(--ok); font-weight:600; }
+  .badge.speech { color:#101010; background:var(--warn); border-color:var(--warn); font-weight:600; }
+  .spacer { flex:1; }
+  .fld { display:flex; align-items:center; gap:6px; color:var(--dim); font-size:12px; }
+  input[type=text] { background:#0c0e13; color:var(--text); border:1px solid var(--edge);
+                     border-radius:6px; padding:6px 8px; font:13px ui-monospace,monospace; width:180px; }
+  button { border:none; border-radius:8px; padding:8px 18px; font-size:13px; font-weight:600;
+           cursor:pointer; color:#fff; background:var(--accent); }
+  button:disabled { opacity:.45; cursor:default; }
+  button.stop { background:#2a303c; color:var(--text); }
+  button.stop.rec { background:#d64545; color:#fff; }
+  main { max-width:900px; margin:0 auto; padding:18px; }
+  #bar { display:flex; align-items:center; gap:12px; padding:10px 12px; border-radius:10px;
+         background:var(--panel); border:1px solid var(--edge); margin-bottom:14px; font-size:12px; color:var(--dim); }
+  #meterwrap { flex:1; height:8px; border-radius:4px; background:#0c0e13; overflow:hidden; }
+  #meter { display:block; height:100%; width:0%;
+           background:linear-gradient(90deg,#4f9cff,#37d67a); transition:width .08s linear; }
+  #status { min-width:160px; text-align:right; }
+  #transcript { background:var(--panel); border:1px solid var(--edge); border-radius:10px;
+                padding:16px; min-height:320px; max-height:70vh; overflow:auto;
+                font:15px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace; }
+  .line { margin:0 0 10px; white-space:pre-wrap; word-break:break-word; }
+  .line.final { color:var(--text); }
+  .line.interim { color:var(--dim); }
+  .cursor { display:inline-block; width:8px; height:1em; translate:0 2px;
+            background:var(--accent); animation:blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  #log { margin-top:14px; color:var(--dim); font-size:12px;
+         font-family:ui-monospace,monospace; max-height:110px; overflow:auto; }
+  .err { color:var(--bad); }
+  .hint { margin-top:14px; color:var(--dim); font-size:12px; line-height:1.6; }
+  code { background:#0c0e13; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SenseVoice <small>realtime transcription</small></h1>
+  <span id="bd_ws"  class="badge">ws: —</span>
+  <span id="bd_vad" class="badge">vad: —</span>
+  <span id="bd_mic" class="badge">mic: —</span>
+  <div class="spacer"></div>
+  <div class="fld">server <input id="host" type="text" spellcheck="false" autocomplete="off"></div>
+  <button id="btn" class="stop">Start</button>
+</header>
+<main>
+  <div id="bar">
+    <span>level</span><span id="meterwrap"><span id="meter"></span></span>
+    <span id="status">idle</span>
+  </div>
+  <div id="transcript"></div>
+  <div id="log"></div>
+  <p class="hint">
+    Mic audio is captured in the browser, downsampled to <b>16&nbsp;kHz mono</b>, base64-PCM16 encoded, and
+    streamed to <code>/v1/realtime?intent=transcription</code>. FSMN-VAD end-points each sentence:
+    provisional text updates <i>in place</i>; when a sentence is committed it moves onto its own line.
+    Serve the page yourself, or run the server with
+    <code>--web&nbsp;runtime/llama.cpp/sensevoice-server/webui</code> and open <code>http://127.0.0.1:8040/</code>.
+  </p>
+</main>
+<script>
+(() => {
+"use strict";
+const $ = id => document.getElementById(id);
+const WS_PATH = "/v1/realtime?intent=transcription";
+const RATE = 16000;
+const CHUNK = RATE / 5;                       // 200 ms of PCM16 per append
+
+$("host").value = location.host || "127.0.0.1:8040";
+
+let ws = null, ac = null, srcNode = null, proc = null, stream = null, sending = false;
+let bufIn = [], outSamples = [], ratio = 1;
+let known = "", speaking = false, running = false;
+const transcript = $("transcript");
+
+const badge = (id, text, cls) => { const b = $(id); b.textContent = text;
+                                   b.className = "badge" + (cls ? " " + cls : ""); };
+function log(msg, isErr) { const l = $("log");
+  l.textContent += new Date().toLocaleTimeString() + "  " + msg + "\n";
+  l.scrollTop = l.scrollHeight; if (isErr) l.classList.add("err"); }
+const setStatus = s => { $("status").textContent = s; };
+
+function ensureInterim() {
+  let l = transcript.querySelector(".line.interim");
+  if (!l) { l = document.createElement("div"); l.className = "line interim"; transcript.appendChild(l); }
+  return l;
+}
+function renderInterim() {
+  const l = ensureInterim();
+  l.textContent = "";
+  if (known) { const t = document.createTextNode(known);
+               const c = document.createElement("span"); c.className = "cursor"; l.append(t, c); }
+}
+function commit(text) {
+  const finalText = text || known;
+  known = "";
+  const l = ensureInterim();
+  l.classList.remove("interim"); l.classList.add("final");
+  l.textContent = finalText || "";
+  ensureInterim();                                  // fresh line for the next sentence
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+// The server sends either a suffix (prefix-stable) or the revised full text.
+function merge(knownText, delta) {
+  if (!delta) return knownText;
+  if (delta.startsWith(knownText)) return delta;    // full-text revision
+  return knownText + delta;                         // suffix append
+}
+
+function handleMsg(raw) {
+  let m; try { m = JSON.parse(raw); } catch (e) { return; }
+  switch (m.type) {
+    case "session.created":
+      badge("bd_ws", "ws: live", "on"); setStatus("streaming…");
+      log("session ready " + ((m.session && m.session.id) || ""));
+      break;
+    case "input_audio_buffer.speech_started":
+      speaking = true; badge("bd_vad", "vad: speech", "speech");
+      setStatus("speech @" + (m.audio_start_ms / 1000).toFixed(2) + "s");
+      known = ""; renderInterim();
+      break;
+    case "input_audio_buffer.speech_stopped":
+      badge("bd_vad", "vad: idle"); setStatus("speech stopped");
+      break;
+    case "conversation.item.input_audio_transcription.delta":
+      known = merge(known, m.delta || "");
+      renderInterim();
+      break;
+    case "input_audio_buffer.committed":
+      setStatus("committed");
+      break;
+    case "conversation.item.input_audio_transcription.completed":
+      speaking = false; badge("bd_vad", "vad: idle");
+      commit(m.transcript || "");
+      setStatus("line committed");
+      log("final: " + (m.transcript || "").slice(0, 60));
+      break;
+    case "error":
+      log("server error: " + ((m.error && m.error.message) || JSON.stringify(m)), true);
+      break;
+  }
+}
+// ---- WebSocket ----
+function openSocket() {
+  return new Promise((resolve, reject) => {
+    const host = ($("host").value || "127.0.0.1:8040").trim();
+    const url = (location.protocol === "https:" ? "wss://" : "ws://") + host + WS_PATH;
+    ws = new WebSocket(url);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "session.update",
+        session: { turn_detection: { type: "server_vad" } } }));
+      resolve();
+    };
+    ws.onmessage = e => handleMsg(e.data);
+    ws.onclose = () => { badge("bd_ws", "ws: closed"); if (running) stop("socket closed"); };
+    ws.onerror = () => reject(new Error("WebSocket error — is the server running on " + host + "?"));
+  });
+}
+
+// ---- Mic capture (downsample to 16 kHz mono, encode PCM16 base64) ----
+function int16Base64(samples) {
+  const bytes = new Uint8Array(samples.length * 2);
+  const dv = new DataView(bytes.buffer);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    dv.setInt16(i * 2, s * 32767, true);
+  }
+  return btoa(String.fromCharCode.apply(null, bytes));
+}
+function sendChunk() {
+  if (!outSamples.length || ws.readyState !== 1) return;
+  const b64 = int16Base64(outSamples.splice(0, CHUNK));
+  ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: b64 }));
+}
+async function start() {
+  if (running) return;
+  $("btn").disabled = true;
+  try {
+    await openSocket();
+  } catch (e) {
+    log(e.message, true); $("btn").disabled = false; return;
+  }
+  const constraints = { audio: { channelCount: 1, echoCancellation: true,
+                                 noiseSuppression: true, autoGainControl: true } };
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (e) {
+    log("mic error: " + e.name + " — " + e.message, true);
+    ws.close(); $("btn").disabled = false; return;
+  }
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  ratio = ac.sampleRate / RATE;
+  const src = ac.createMediaStreamSource(stream);
+  srcNode = src;
+  proc = ac.createScriptProcessor(4096, 1, 1);
+  proc.onaudioprocess = e => {
+    const input = e.inputBuffer.getChannelData(0);
+    let level = 0;
+    for (let i = 0; i < input.length; i++) { const a = input[i]; level += a * a; bufIn.push(a); }
+    level = Math.sqrt(level / input.length);
+    $("meter").style.width = Math.min(100, Math.round(level * 220)) + "%";
+    const n = Math.floor(bufIn.length / ratio);
+    for (let k = 0; k < n; k++) {
+      const idx = Math.round((k + 0.5) * ratio - 0.5);
+      outSamples.push(bufIn[idx]);
+    }
+    bufIn = bufIn.slice(n * ratio);
+    if (outSamples.length >= CHUNK) sendChunk();
+  };
+  src.connect(proc); proc.connect(ac.destination);
+  running = true; sending = true;
+  badge("bd_mic", "mic: live", "on");
+  $("btn").textContent = "Stop"; $("btn").classList.add("rec"); $("btn").disabled = false;
+  setStatus("listening…");
+  log("mic open @" + ac.sampleRate + " Hz → " + RATE + " Hz mono PCM16");
+}
+function stop(reason) {
+  if (!running) return;
+  running = false;
+  if (outSamples.length) sendChunk();                    // flush trailing audio
+  try { ws.send(JSON.stringify({ type: "input_audio_buffer.commit" })); } catch (e) {}
+  if (proc) { proc.disconnect(); srcNode && srcNode.disconnect(); }
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  if (ac) ac.close();
+  proc = srcNode = stream = ac = null;
+  badge("bd_mic", "mic: stopped");
+  $("btn").textContent = "Start"; $("btn").classList.remove("rec");
+  setStatus(reason || "stopped");
+  log(reason || "stopped");
+}
+
+$("btn").addEventListener("click", () => running ? stop() : start());
+window.addEventListener("beforeunload", () => { try { stop(); } catch (e) {} });
+})();
+</script>
+</body>
+</html>

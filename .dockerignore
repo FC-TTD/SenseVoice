@@ -1,0 +1,26 @@
+# Repository metadata and local credentials are not runtime inputs.
+.git
+**/.git
+.env
+**/.env
+.env.*
+**/.env.*
+.ssh
+**/.ssh
+.aws
+**/.aws
+.netrc
+**/.netrc
+.pypirc
+**/.pypirc
+**/github_token
+**/hf_token
+.mcp-tasks
+**/.mcp-tasks
+
+# Local development environments and generated caches.
+.venv
+venv
+**/__pycache__
+.pytest_cache
+.mypy_cache

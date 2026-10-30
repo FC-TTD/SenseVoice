@@ -19,7 +19,7 @@ class SinusoidalPositionEncoder(torch.nn.Module):
     """ """
 
     def __init__(self, d_model=80, dropout_rate=0.1):
-        pass
+        super().__init__()
 
     def encode(
         self, positions: torch.Tensor = None, depth: int = None, dtype: torch.dtype = torch.float32
@@ -887,39 +887,83 @@ class SenseVoiceSmall(nn.Module):
                 from itertools import groupby
                 timestamp = []
                 tokens = tokenizer.text2tokens(text)[4:]
+                token_ids = []
+                token_owners = []
+                for owner, ids in enumerate(tokenizer.tokens2ids(tokens)):
+                    ids = ids or [124]
+                    token_ids.extend(ids)
+                    token_owners.extend([owner] * len(ids))
+                if not token_ids:
+                    results.append({"key": key[i], "text": text, "timestamp": [], "words": []})
+                    continue
 
-                logits_speech = self.ctc.softmax(encoder_out)[i, 4:encoder_out_lens[i].item(), :]
+                logits_speech = self.ctc.log_softmax(encoder_out)[i, 4:encoder_out_lens[i].item(), :]
 
                 pred = logits_speech.argmax(-1).cpu()
                 logits_speech[pred==self.blank_id, self.blank_id] = 0
 
                 align = ctc_forced_align(
                     logits_speech.unsqueeze(0).float(),
-                    torch.Tensor(token_int[4:]).unsqueeze(0).long().to(logits_speech.device),
+                    torch.tensor(token_ids).unsqueeze(0).long().to(logits_speech.device),
                     (encoder_out_lens-4).long()[i],
-                    torch.tensor(len(token_int)-4).unsqueeze(0).long().to(logits_speech.device),
+                    torch.tensor(len(token_ids)).unsqueeze(0).long().to(logits_speech.device),
                     ignore_id=self.ignore_id,
                 )
 
-                pred = groupby(align[0, :encoder_out_lens[0]])
+                pred = groupby(align[0, :encoder_out_lens[i]])
                 _start = 0
                 token_id = 0
                 ts_max = encoder_out_lens[i] - 4
                 for pred_token, pred_frame in pred:
                     _end = _start + len(list(pred_frame))
-                    if pred_token != 0 and token_id < len(tokens):
+                    if pred_token != 0:
+                        if token_id >= len(token_ids) or int(pred_token) != token_ids[token_id]:
+                            raise ValueError("CTC alignment does not match the decoded token sequence")
+                        owner = token_owners[token_id]
                         ts_left = max((_start*60-30)/1000, 0)
                         ts_right = min((_end*60-30)/1000, (ts_max*60-30)/1000)
-                        timestamp.append([tokens[token_id], ts_left, ts_right])
+                        if token_id and owner == token_owners[token_id - 1]:
+                            timestamp[-1][2] = ts_right
+                        else:
+                            timestamp.append([tokens[owner], ts_left, ts_right])
                         token_id += 1
                     _start = _end
+                if token_id != len(token_ids):
+                    raise ValueError("CTC alignment did not cover all decoded tokens")
 
-                result_i = {"key": key[i], "text": text, "timestamp": timestamp}
+                timestamp, words = self.post(timestamp)
+                result_i = {"key": key[i], "text": text, "timestamp": timestamp, "words": words}
                 results.append(result_i)
             else:
                 result_i = {"key": key[i], "text": text}
                 results.append(result_i)
         return results, meta_data
+
+    def post(self, timestamp):
+        """Convert aligned subword seconds to word-aligned millisecond pairs."""
+        pairs, words = [], []
+        previous = None
+        for token, start, end in timestamp:
+            if token == "▁":
+                previous = None
+                continue
+            starts_word = token.startswith("▁")
+            word = token[1:] if starts_word else token
+            start, end = int(start * 1000), int(end * 1000)
+            if (
+                not starts_word
+                and previous is not None
+                and previous.isascii() and previous.isalpha()
+                and word.isascii() and word.isalpha()
+            ):
+                word = previous + word
+                pairs[-1][1] = end
+                words[-1] = word
+            else:
+                pairs.append([start, end])
+                words.append(word)
+            previous = word
+        return pairs, words
 
     def export(self, **kwargs):
         from export_meta import export_rebuild_model
