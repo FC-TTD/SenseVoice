@@ -1,7 +1,7 @@
 # Reuse the verified CPU dependency environment; rebuild docker/Dockerfile separately
 # when intentionally changing dependencies, then update this immutable baseline.
 FROM registry.ttd/sensevoice/asrpri@sha256:fd3dec494ff1442f8682b968c9a71892ee4f47298b515ade1d904d61e5a06c16
-WORKDIR /app
-# Remove inherited application files so deleted files cannot survive the upgrade.
-RUN rm -rf /app && mkdir -p /app/tmp
-COPY --link . /app
+# A fresh working directory prevents inherited application files from entering
+# Python's import path, without modifying the immutable dependency layer.
+WORKDIR /srv/sensevoice
+COPY --link . /srv/sensevoice
